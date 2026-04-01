@@ -1333,6 +1333,42 @@ decode QUADRANT default Unknown::unknown() {
             }
         }
 
+        // Custom-0 opcode space (RISC-V reserved for custom extensions)
+        // R-type encoding: [ funct7 | rs2 | rs1 | funct3 | rd | 0001011 ]
+        // Full 7-bit opcode: 0b0001011 (0x0B)
+        // To assemble this instruction, use: .insn r 0x0B, <funct3>, <funct7>, rd, rs1, rs2
+        0x02: decode FUNCT3 {
+            format ROp {
+                // TODO: Add additional FUNCT3 variants (0x1..0x7) here if needed.
+                0x0: decode FUNCT7 {
+                    // TODO: Add more FUNCT7 variants (0x01..0x7F) here for more instructions.
+                    0x00: my_instr({{
+                        // TODO: Replace this body with your instruction logic.
+                        //
+                        // Available source operands:
+                        //   Rs1    -- rs1 as uint64_t
+                        //   Rs2    -- rs2 as uint64_t
+                        //   Rs1_sd -- rs1 as int64_t (sign-extended)
+                        //   Rs2_sd -- rs2 as int64_t (sign-extended)
+                        //   Rs1_sw -- rs1 as int32_t
+                        //   Rs2_sw -- rs2 as int32_t
+                        //   Rs1_uw -- rs1 as uint32_t
+                        //   Rs2_uw -- rs2 as uint32_t
+                        //
+                        // Write the result to one of:
+                        //   Rd    -- destination as uint64_t
+                        //   Rd_sd -- destination as int64_t
+                        //
+                        // Use rvSext(val) to sign-extend a 64-bit result when needed.
+                        //
+                        // Example (addition):
+                        //   Rd = rvSext(Rs1_sd + Rs2_sd);
+                        Rd = 0; // placeholder -- replace with real logic
+                    }});
+                }
+            }
+        }
+
         0x03: decode FUNCT3 {
             format FenceOp {
                 0x0: fence({{
