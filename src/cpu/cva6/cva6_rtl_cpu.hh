@@ -1,10 +1,15 @@
 #ifndef __CPU_CVA6_CVA6_RTL_CPU_HH__
 #define __CPU_CVA6_CVA6_RTL_CPU_HH__
 
-#include "sim/clocked_object.hh"
+#include "Vcva6_top.h"
 #include "mem/port.hh"
 #include "params/CVA6RtlCPU.hh"
-#include "Vcva6_top.h"
+#include "sim/clocked_object.hh"
+
+#if VM_TRACE
+#include "verilated_vcd_c.h"
+
+#endif
 #include <vector>
 
 namespace gem5
@@ -30,6 +35,9 @@ class CVA6RtlCPU : public ClockedObject
     CpuPort dataPort;
 
     Vcva6_top *core;
+#if VM_TRACE
+    VerilatedVcdC *tfp;
+#endif
     uint64_t cycleCount;
     bool resetDone;
 

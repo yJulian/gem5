@@ -14,3 +14,6 @@ class CVA6RtlCPU(ClockedObject):
     inst_port = RequestPort("Instruction request port to memory")
     data_port = RequestPort("Data request port to memory")
     system = Param.System(Parent.any, "System this CPU belongs to")
+
+    trace_enable = Param.Bool(False, "Enable VCD tracing of CVA6 RTL signals")
+    trace_file = Param.String("cva6_trace.vcd", "VCD trace filename")

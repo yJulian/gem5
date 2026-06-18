@@ -7,6 +7,7 @@ SimObject('CVA6RtlCPU.py', sim_objects=['CVA6RtlCPU'])
 Source('cva6_rtl_cpu.cc')
 
 # Append Verilator compile flags and library paths to the SCons environment
+env.Append(CPPDEFINES=['VM_TRACE=1'])
 env.Append(CPPPATH=[
     '/home/julian/gem5_cva6/cva6/work-ver-core',
     '/usr/local/share/verilator/include',

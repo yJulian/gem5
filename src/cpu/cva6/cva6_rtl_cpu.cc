@@ -28,6 +28,26 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params) :
     // Instantiate Verilated CVA6 model
     core = new Vcva6_top();
 
+#if VM_TRACE
+    if (params.trace_enable) {
+        Verilated::traceEverOn(true);
+        tfp = new VerilatedVcdC;
+        core->trace(tfp, 99);
+        tfp->open(params.trace_file.c_str());
+#ifdef DEBUG_CVA
+        std::cout << "[CVA6 CPU] Tracing enabled, writing to "
+                  << params.trace_file << std::endl;
+#endif
+    } else {
+        tfp = nullptr;
+    }
+#else
+    if (params.trace_enable) {
+        warn("Tracing requested but Verilator was not compiled with VM_TRACE "
+             "enabled.");
+    }
+#endif
+
     // Initialize inputs
     core->clk_i = 0;
     core->rst_ni = 0;
@@ -44,6 +64,12 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params) :
 
 CVA6RtlCPU::~CVA6RtlCPU()
 {
+#if VM_TRACE
+    if (tfp) {
+        tfp->close();
+        delete tfp;
+    }
+#endif
     delete core;
 }
 
@@ -71,9 +97,11 @@ CVA6RtlCPU::tick()
 {
     cycleCount++;
 
+#ifdef DEBUG_CVA
     if (cycleCount % 1000 == 0) {
         std::cout << "[CVA6 CPU] Simulated clock cycles: " << std::dec << cycleCount << std::endl;
     }
+#endif
 
     // 1. Reset logic
     if (cycleCount < 10) {
@@ -134,6 +162,11 @@ CVA6RtlCPU::tick()
         core->noc_resp_w_ready_i = 0;
     }
     core->eval(); // Propagate falling edge and inputs combinationally
+#if VM_TRACE
+    if (tfp) {
+        tfp->dump(cycleCount * 10);
+    }
+#endif
 
     // 3. Check handshakes that will complete ON the upcoming rising edge.
     // We check this after eval() when the clock is low, so that combinational
@@ -159,6 +192,7 @@ CVA6RtlCPU::tick()
 
             uint64_t first_word = 0;
             std::memcpy(&first_word, read_data_buffer.data(), std::min(total_bytes, 8u));
+#ifdef DEBUG_CVA
             std::cout << "[AR] Cycle=" << std::dec << cycleCount
                       << " Addr=0x" << std::hex << addr
                       << " id=0x" << (int)core->noc_req_ar_id_o
@@ -166,6 +200,7 @@ CVA6RtlCPU::tick()
                       << " len=" << (int)core->noc_req_ar_len_o
                       << " prot=" << (int)core->noc_req_ar_prot_o
                       << " -> first_word=0x" << std::hex << first_word << std::dec << std::endl;
+#endif
 
             read_id = core->noc_req_ar_id_o;
             read_len = core->noc_req_ar_len_o;
@@ -182,11 +217,13 @@ CVA6RtlCPU::tick()
             uint32_t bytes_per_beat = 1 << read_size;
             uint64_t beat_val = 0;
             std::memcpy(&beat_val, read_data_buffer.data() + read_beat * bytes_per_beat, std::min(bytes_per_beat, 8u));
+#ifdef DEBUG_CVA
             std::cout << "[R Handshake] Cycle=" << std::dec << cycleCount
                       << " Beat=" << read_beat << "/" << read_len
                       << " id=0x" << std::hex << (int)core->noc_resp_r_id_i
                       << " Data=0x" << beat_val
                       << " last=" << std::dec << (int)(read_beat == read_len) << std::endl;
+#endif
 
             if (read_beat == read_len) {
                 ar_busy = false;
@@ -211,11 +248,13 @@ CVA6RtlCPU::tick()
             write_len = core->noc_req_aw_len_o;
             w_received_beats = 0;
 
+#ifdef DEBUG_CVA
             std::cout << "[AW Handshake] Cycle=" << std::dec << cycleCount
                       << " Addr=0x" << std::hex << write_addr
                       << " id=0x" << write_id
                       << " size=" << std::dec << (1 << write_size)
                       << " len=" << write_len << std::endl;
+#endif
         }
 
         // E. Write data (W channel) handshake
@@ -227,14 +266,16 @@ CVA6RtlCPU::tick()
                             + w_received_beats * bytes_per_beat;
             uint64_t data_val = core->noc_req_w_data_o;
 
+#ifdef DEBUG_CVA
             std::cout << "[W Handshake] Cycle=" << std::dec << cycleCount
                       << " Addr=0x" << std::hex << addr
                       << " Beat=" << std::dec << w_received_beats
                       << " Data=0x" << std::hex << data_val << std::dec << std::endl;
+#endif
 
             // Check exit command
             if (addr == 0x80001000 && data_val != 0) {
-                std::cout << "\n============================================\n";
+#ifdef DEBUG_CVA
                 std::cout << "CVA6 Simulation finished! tohost = " << data_val
                           << " (exit code = " << (data_val >> 1) << ")" << std::endl;
                 if (data_val == 1) {
@@ -244,6 +285,7 @@ CVA6RtlCPU::tick()
                 }
                 std::cout << "Total simulated clock cycles: " << cycleCount << std::endl;
                 std::cout << "============================================\n";
+#endif
                 exitSimLoop("CVA6 program completed successfully");
                 return;
             }
@@ -270,14 +312,21 @@ CVA6RtlCPU::tick()
         // F. Write response (B channel) handshake
         if (write_resp_pending && core->noc_resp_b_valid_i && core->noc_req_b_ready_o) {
             write_resp_pending = false;
+#ifdef DEBUG_CVA
             std::cout << "[B Handshake] Cycle=" << std::dec << cycleCount
                       << " id=0x" << std::hex << write_id << std::dec << std::endl;
+#endif
         }
     }
 
     // 4. Rising Edge
     core->clk_i = 1;
     core->eval();
+#if VM_TRACE
+    if (tfp) {
+        tfp->dump(cycleCount * 10 + 5);
+    }
+#endif
 
     // 5. Schedule next cycle
     schedule(tickEvent, clockEdge(Cycles(1)));
