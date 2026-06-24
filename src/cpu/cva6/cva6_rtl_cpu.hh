@@ -1,12 +1,12 @@
 #ifndef __CPU_CVA6_CVA6_RTL_CPU_HH__
 #define __CPU_CVA6_CVA6_RTL_CPU_HH__
 
+#include <vector>
+
 #include "cpu/cva6/cva6_rtl_core_interface.hh"
 #include "mem/port.hh"
 #include "params/CVA6RtlCPU.hh"
 #include "sim/clocked_object.hh"
-
-#include <vector>
 
 namespace gem5
 {

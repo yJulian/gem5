@@ -1,7 +1,10 @@
 #include "cpu/cva6/cva6_rtl_cpu.hh"
-#include <cstring>
+
 #include <dlfcn.h>
+
+#include <cstring>
 #include <iostream>
+
 #include "base/logging.hh"
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"

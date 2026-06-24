@@ -5,8 +5,10 @@
 #include "Vcva6_top.h"
 #include "cva6_rtl_core_interface.hh"
 #include "verilated.h"
+
 #if VM_TRACE
 #include "verilated_vcd_c.h"
+
 #endif
 
 namespace gem5
