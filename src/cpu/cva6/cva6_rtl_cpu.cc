@@ -1,4 +1,5 @@
 #include "cpu/cva6/cva6_rtl_cpu.hh"
+#define DEBUG_CVA 0
 
 #include <dlfcn.h>
 
@@ -257,6 +258,21 @@ CVA6RtlCPU::tick()
             r_data_ready = true;
         }
 
+        // F. Write response (B channel) handshake
+        if (write_resp_pending && core->get_noc_req_b_ready_o()) {
+            write_resp_pending = false;
+#ifdef DEBUG_CVA
+            std::cout << "[B Handshake] Cycle=" << std::dec << cycleCount
+                      << " id=0x" << std::hex << write_id << std::dec
+                      << std::endl;
+#endif
+            // Re-drive AW/W ready inputs now that write_resp_pending is false
+            core->set_noc_resp_aw_ready_i(!aw_received);
+            core->set_noc_resp_w_ready_i(aw_received ||
+                                         core->get_noc_req_aw_valid_o());
+            core->eval();
+        }
+
         // D. Write address (AW channel) handshake
         bool aw_handshake = !aw_received && !write_resp_pending &&
                             core->get_noc_req_aw_valid_o();
@@ -333,15 +349,6 @@ CVA6RtlCPU::tick()
                 aw_received = false;
                 w_received_beats = 0;
             }
-        }
-
-        // F. Write response (B channel) handshake
-        if (write_resp_pending && core->get_noc_req_b_ready_o()) {
-            write_resp_pending = false;
-#ifdef DEBUG_CVA
-            std::cout << "[B Handshake] Cycle=" << std::dec << cycleCount
-                      << " id=0x" << std::hex << write_id << std::dec << std::endl;
-#endif
         }
     }
 

@@ -4,4 +4,6 @@
 Import('*')
 
 SimObject('CVA6RtlCPU.py', sim_objects=['CVA6RtlCPU'])
+SimObject('FifoAccelerator.py', sim_objects=['FifoAccelerator'])
 Source('cva6_rtl_cpu.cc')
+Source('fifo_accel.cc')
