@@ -319,7 +319,7 @@ CVA6RtlCPU::tick()
                 std::cout << "CVA6 Simulation finished! tohost = " << data_val
                           << " (exit code = " << (data_val >> 1) << ")" << std::endl;
                 if (data_val == 1) {
-                    std::cout << "SUCCESS: Sum of 1 to 9 is correct!" << std::endl;
+                    std::cout << "SUCCESS: data_val = 1!" << std::endl;
                 } else {
                     std::cout << "FAILURE: program exited with code " << data_val << std::endl;
                 }
