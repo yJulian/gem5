@@ -1,62 +1,72 @@
 #include "cpu/cva6/cva6_rtl_cpu.hh"
-#include "sim/system.hh"
-#include "sim/sim_exit.hh"
-#include "base/logging.hh"
-#include <iostream>
 #include <cstring>
+#include <dlfcn.h>
+#include <iostream>
+#include "base/logging.hh"
+#include "sim/sim_exit.hh"
+#include "sim/system.hh"
 
 namespace gem5
 {
 
-CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params) :
-    ClockedObject(params),
-    instPort(params.name + ".inst_port", this),
-    dataPort(params.name + ".data_port", this),
-    cycleCount(0),
-    resetDone(false),
-    ar_busy(false),
-    r_data_ready(false),
-    aw_received(false),
-    write_addr(0),
-    write_id(0),
-    write_size(0),
-    write_len(0),
-    w_received_beats(0),
-    write_resp_pending(false),
-    tickEvent([this]{ tick(); }, name() + ".tick")
+CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
+    : ClockedObject(params),
+      instPort(params.name + ".inst_port", this),
+      dataPort(params.name + ".data_port", this),
+      cycleCount(0),
+      resetDone(false),
+      ar_busy(false),
+      r_data_ready(false),
+      aw_received(false),
+      write_addr(0),
+      write_id(0),
+      write_size(0),
+      write_len(0),
+      w_received_beats(0),
+      write_resp_pending(false),
+      tickEvent([this] { tick(); }, name() + ".tick"),
+      core(nullptr),
+      libHandle(nullptr),
+      destroyCorePointer(nullptr)
 {
-    // Instantiate Verilated CVA6 model
-    core = new Vcva6_top();
+    // Load RTL Shared Library using dlopen
+    libHandle = dlopen(params.rtl_library.c_str(), RTLD_LAZY | RTLD_LOCAL);
+    if (!libHandle) {
+        fatal("Failed to load RTL library '%s': %s\n", params.rtl_library,
+              dlerror());
+    }
 
-#if VM_TRACE
+    create_core_t create_core = (create_core_t)dlsym(libHandle, "create_core");
+    destroyCorePointer = (destroy_core_t)dlsym(libHandle, "destroy_core");
+
+    const char *dlsym_error = dlerror();
+    if (dlsym_error || !create_core || !destroyCorePointer) {
+        fatal("Cannot load symbol 'create_core' or 'destroy_core' from '%s': "
+              "%s\n",
+              params.rtl_library, dlsym_error ? dlsym_error : "unknown error");
+    }
+
+    // Instantiate Verilated CVA6 model from shared library
+    core = create_core();
+
     if (params.trace_enable) {
-        Verilated::traceEverOn(true);
-        tfp = new VerilatedVcdC;
-        core->trace(tfp, 99);
-        tfp->open(params.trace_file.c_str());
+        core->setup_trace(params.trace_file);
 #ifdef DEBUG_CVA
-        std::cout << "[CVA6 CPU] Tracing enabled, writing to "
-                  << params.trace_file << std::endl;
+        std::cout
+            << "[CVA6 CPU] Tracing enabled (delegated to library), writing to "
+            << params.trace_file << std::endl;
 #endif
-    } else {
-        tfp = nullptr;
     }
-#else
-    if (params.trace_enable) {
-        warn("Tracing requested but Verilator was not compiled with VM_TRACE "
-             "enabled.");
-    }
-#endif
 
     // Initialize inputs
-    core->clk_i = 0;
-    core->rst_ni = 0;
-    core->boot_addr_i = 0x80000000;
-    core->hart_id_i = 0;
-    core->irq_i = 0;
-    core->ipi_i = 0;
-    core->time_irq_i = 0;
-    core->debug_req_i = 0;
+    core->set_clk_i(0);
+    core->set_rst_ni(0);
+    core->set_boot_addr_i(0x80000000);
+    core->set_hart_id_i(0);
+    core->set_irq_i(0);
+    core->set_ipi_i(0);
+    core->set_time_irq_i(0);
+    core->set_debug_req_i(0);
     core->eval();
 
     requestorId = params.system->getRequestorId(this);
@@ -64,13 +74,15 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params) :
 
 CVA6RtlCPU::~CVA6RtlCPU()
 {
-#if VM_TRACE
-    if (tfp) {
-        tfp->close();
-        delete tfp;
+    if (core) {
+        core->close_trace();
+        if (destroyCorePointer) {
+            destroyCorePointer(core);
+        }
     }
-#endif
-    delete core;
+    if (libHandle) {
+        dlclose(libHandle);
+    }
 }
 
 Port &
@@ -105,85 +117,88 @@ CVA6RtlCPU::tick()
 
     // 1. Reset logic
     if (cycleCount < 10) {
-        core->rst_ni = 0;
+        core->set_rst_ni(0);
         resetDone = false;
     } else {
-        core->rst_ni = 1;
+        core->set_rst_ni(1);
         resetDone = true;
     }
 
     // 2. Falling Edge & Setup Inputs
-    core->clk_i = 0;
+    core->set_clk_i(0);
     if (resetDone) {
         // Drive R channel outputs
         if (ar_busy && r_data_ready) {
-            core->noc_resp_r_valid_i = 1;
-            core->noc_resp_r_id_i = read_id;
+            core->set_noc_resp_r_valid_i(1);
+            core->set_noc_resp_r_id_i(read_id);
             uint32_t bytes_per_beat = 1 << read_size;
-            core->noc_resp_r_data_i = 0; // Clear first
-            std::memcpy(&core->noc_resp_r_data_i, read_data_buffer.data() + read_beat * bytes_per_beat, bytes_per_beat);
-            core->noc_resp_r_last_i = (read_beat == read_len);
-            core->noc_resp_r_resp_i = 0; // OKAY
+            uint64_t data_val = 0;
+            std::memcpy(&data_val,
+                        read_data_buffer.data() + read_beat * bytes_per_beat,
+                        bytes_per_beat);
+            core->set_noc_resp_r_data_i(data_val);
+            core->set_noc_resp_r_last_i(read_beat == read_len);
+            core->set_noc_resp_r_resp_i(0); // OKAY
         } else {
-            core->noc_resp_r_valid_i = 0;
-            core->noc_resp_r_last_i = 0;
-            core->noc_resp_r_data_i = 0;
-            core->noc_resp_r_id_i = 0;
-            core->noc_resp_r_resp_i = 0;
+            core->set_noc_resp_r_valid_i(0);
+            core->set_noc_resp_r_last_i(0);
+            core->set_noc_resp_r_data_i(0);
+            core->set_noc_resp_r_id_i(0);
+            core->set_noc_resp_r_resp_i(0);
         }
 
         // Drive B channel outputs
         if (write_resp_pending) {
-            core->noc_resp_b_valid_i = 1;
-            core->noc_resp_b_id_i = write_id;
-            core->noc_resp_b_resp_i = 0; // OKAY
+            core->set_noc_resp_b_valid_i(1);
+            core->set_noc_resp_b_id_i(write_id);
+            core->set_noc_resp_b_resp_i(0); // OKAY
         } else {
-            core->noc_resp_b_valid_i = 0;
-            core->noc_resp_b_id_i = 0;
-            core->noc_resp_b_resp_i = 0;
+            core->set_noc_resp_b_valid_i(0);
+            core->set_noc_resp_b_id_i(0);
+            core->set_noc_resp_b_resp_i(0);
         }
 
         // Drive ready inputs
-        core->noc_resp_ar_ready_i = !ar_busy;
-        core->noc_resp_aw_ready_i = !aw_received && !write_resp_pending;
-        core->noc_resp_w_ready_i = (aw_received || core->noc_req_aw_valid_o) && !write_resp_pending;
+        core->set_noc_resp_ar_ready_i(!ar_busy);
+        core->set_noc_resp_aw_ready_i(!aw_received && !write_resp_pending);
+        core->set_noc_resp_w_ready_i(
+            (aw_received || core->get_noc_req_aw_valid_o()) &&
+            !write_resp_pending);
     } else {
         // Inputs during reset
-        core->noc_resp_r_valid_i = 0;
-        core->noc_resp_r_last_i = 0;
-        core->noc_resp_r_data_i = 0;
-        core->noc_resp_r_id_i = 0;
-        core->noc_resp_r_resp_i = 0;
-        core->noc_resp_b_valid_i = 0;
-        core->noc_resp_b_id_i = 0;
-        core->noc_resp_b_resp_i = 0;
-        core->noc_resp_ar_ready_i = 0;
-        core->noc_resp_aw_ready_i = 0;
-        core->noc_resp_w_ready_i = 0;
+        core->set_noc_resp_r_valid_i(0);
+        core->set_noc_resp_r_last_i(0);
+        core->set_noc_resp_r_data_i(0);
+        core->set_noc_resp_r_id_i(0);
+        core->set_noc_resp_r_resp_i(0);
+        core->set_noc_resp_b_valid_i(0);
+        core->set_noc_resp_b_id_i(0);
+        core->set_noc_resp_b_resp_i(0);
+        core->set_noc_resp_ar_ready_i(0);
+        core->set_noc_resp_aw_ready_i(0);
+        core->set_noc_resp_w_ready_i(0);
     }
     core->eval(); // Propagate falling edge and inputs combinationally
-#if VM_TRACE
-    if (tfp) {
-        tfp->dump(cycleCount * 10);
-    }
-#endif
+    core->dump_trace(cycleCount * 10);
 
     // 3. Check handshakes that will complete ON the upcoming rising edge.
     // We check this after eval() when the clock is low, so that combinational
     // paths (such as core->noc_req_ar_valid_o and our driven inputs) have settled.
     if (resetDone) {
         // A. Read address (AR channel) handshake
-        if (!ar_busy && core->noc_req_ar_valid_o && core->noc_resp_ar_ready_i) {
-            uint64_t addr = core->noc_req_ar_addr_o;
-            uint32_t bytes_per_beat = 1 << core->noc_req_ar_size_o;
-            uint32_t total_bytes = bytes_per_beat * (core->noc_req_ar_len_o + 1);
+        if (!ar_busy && core->get_noc_req_ar_valid_o()) {
+            uint64_t addr = core->get_noc_req_ar_addr_o();
+            uint32_t bytes_per_beat = 1 << core->get_noc_req_ar_size_o();
+            uint32_t total_bytes =
+                bytes_per_beat * (core->get_noc_req_ar_len_o() + 1);
 
             RequestPtr req = std::make_shared<Request>(addr, total_bytes, 0, requestorId);
             PacketPtr pkt = Packet::createRead(req);
             pkt->allocate();
 
             // Route to instPort if prot indicates instruction fetch, else dataPort
-            CpuPort &port = (core->noc_req_ar_prot_o & 0x4) ? instPort : dataPort;
+            CpuPort &port =
+                (core->get_noc_req_ar_prot_o() & 0x4) ? instPort : dataPort;
             port.sendFunctional(pkt);
 
             read_data_buffer.clear();
@@ -193,18 +208,19 @@ CVA6RtlCPU::tick()
             uint64_t first_word = 0;
             std::memcpy(&first_word, read_data_buffer.data(), std::min(total_bytes, 8u));
 #ifdef DEBUG_CVA
-            std::cout << "[AR] Cycle=" << std::dec << cycleCount
-                      << " Addr=0x" << std::hex << addr
-                      << " id=0x" << (int)core->noc_req_ar_id_o
+            std::cout << "[AR] Cycle=" << std::dec << cycleCount << " Addr=0x"
+                      << std::hex << addr << " id=0x"
+                      << (int)core->get_noc_req_ar_id_o()
                       << " size=" << std::dec << bytes_per_beat
-                      << " len=" << (int)core->noc_req_ar_len_o
-                      << " prot=" << (int)core->noc_req_ar_prot_o
-                      << " -> first_word=0x" << std::hex << first_word << std::dec << std::endl;
+                      << " len=" << (int)core->get_noc_req_ar_len_o()
+                      << " prot=" << (int)core->get_noc_req_ar_prot_o()
+                      << " -> first_word=0x" << std::hex << first_word
+                      << std::dec << std::endl;
 #endif
 
-            read_id = core->noc_req_ar_id_o;
-            read_len = core->noc_req_ar_len_o;
-            read_size = core->noc_req_ar_size_o;
+            read_id = core->get_noc_req_ar_id_o();
+            read_len = core->get_noc_req_ar_len_o();
+            read_size = core->get_noc_req_ar_size_o();
             read_beat = 0;
             ar_busy = true;
             r_data_ready = false; // Will trigger 1-cycle delay next cycle
@@ -213,16 +229,16 @@ CVA6RtlCPU::tick()
         }
 
         // B. Read response (R channel) handshake
-        if (ar_busy && r_data_ready && core->noc_resp_r_valid_i && core->noc_req_r_ready_o) {
+        if (ar_busy && r_data_ready && core->get_noc_req_r_ready_o()) {
             uint32_t bytes_per_beat = 1 << read_size;
             uint64_t beat_val = 0;
             std::memcpy(&beat_val, read_data_buffer.data() + read_beat * bytes_per_beat, std::min(bytes_per_beat, 8u));
 #ifdef DEBUG_CVA
             std::cout << "[R Handshake] Cycle=" << std::dec << cycleCount
-                      << " Beat=" << read_beat << "/" << read_len
-                      << " id=0x" << std::hex << (int)core->noc_resp_r_id_i
-                      << " Data=0x" << beat_val
-                      << " last=" << std::dec << (int)(read_beat == read_len) << std::endl;
+                      << " Beat=" << read_beat << "/" << read_len << " id=0x"
+                      << std::hex << (int)read_id << " Data=0x" << beat_val
+                      << " last=" << std::dec << (int)(read_beat == read_len)
+                      << std::endl;
 #endif
 
             if (read_beat == read_len) {
@@ -239,13 +255,14 @@ CVA6RtlCPU::tick()
         }
 
         // D. Write address (AW channel) handshake
-        bool aw_handshake = !aw_received && core->noc_req_aw_valid_o && core->noc_resp_aw_ready_i;
+        bool aw_handshake = !aw_received && !write_resp_pending &&
+                            core->get_noc_req_aw_valid_o();
         if (aw_handshake) {
             aw_received = true;
-            write_addr = core->noc_req_aw_addr_o;
-            write_id = core->noc_req_aw_id_o;
-            write_size = core->noc_req_aw_size_o;
-            write_len = core->noc_req_aw_len_o;
+            write_addr = core->get_noc_req_aw_addr_o();
+            write_id = core->get_noc_req_aw_id_o();
+            write_size = core->get_noc_req_aw_size_o();
+            write_len = core->get_noc_req_aw_len_o();
             w_received_beats = 0;
 
 #ifdef DEBUG_CVA
@@ -258,13 +275,17 @@ CVA6RtlCPU::tick()
         }
 
         // E. Write data (W channel) handshake
-        if ((aw_received || aw_handshake) && core->noc_req_w_valid_o && core->noc_resp_w_ready_i) {
+        if (!write_resp_pending &&
+            (aw_received || core->get_noc_req_aw_valid_o()) &&
+            core->get_noc_req_w_valid_o()) {
 
-            uint32_t current_size = aw_received ? write_size : core->noc_req_aw_size_o;
+            uint32_t current_size =
+                aw_received ? write_size : core->get_noc_req_aw_size_o();
             uint32_t bytes_per_beat = 1 << current_size;
-            uint64_t addr = (aw_received ? write_addr : core->noc_req_aw_addr_o)
-                            + w_received_beats * bytes_per_beat;
-            uint64_t data_val = core->noc_req_w_data_o;
+            uint64_t addr =
+                (aw_received ? write_addr : core->get_noc_req_aw_addr_o()) +
+                w_received_beats * bytes_per_beat;
+            uint64_t data_val = core->get_noc_req_w_data_o();
 
 #ifdef DEBUG_CVA
             std::cout << "[W Handshake] Cycle=" << std::dec << cycleCount
@@ -301,8 +322,10 @@ CVA6RtlCPU::tick()
             w_received_beats++;
 
             // Wait, did we just finish the write burst?
-            uint32_t current_len = aw_received ? write_len : core->noc_req_aw_len_o;
-            if (w_received_beats == current_len + 1 || core->noc_req_w_last_o) {
+            uint32_t current_len =
+                aw_received ? write_len : core->get_noc_req_aw_len_o();
+            if (w_received_beats == current_len + 1 ||
+                core->get_noc_req_w_last_o()) {
                 write_resp_pending = true;
                 aw_received = false;
                 w_received_beats = 0;
@@ -310,7 +333,7 @@ CVA6RtlCPU::tick()
         }
 
         // F. Write response (B channel) handshake
-        if (write_resp_pending && core->noc_resp_b_valid_i && core->noc_req_b_ready_o) {
+        if (write_resp_pending && core->get_noc_req_b_ready_o()) {
             write_resp_pending = false;
 #ifdef DEBUG_CVA
             std::cout << "[B Handshake] Cycle=" << std::dec << cycleCount
@@ -320,13 +343,9 @@ CVA6RtlCPU::tick()
     }
 
     // 4. Rising Edge
-    core->clk_i = 1;
+    core->set_clk_i(1);
     core->eval();
-#if VM_TRACE
-    if (tfp) {
-        tfp->dump(cycleCount * 10 + 5);
-    }
-#endif
+    core->dump_trace(cycleCount * 10 + 5);
 
     // 5. Schedule next cycle
     schedule(tickEvent, clockEdge(Cycles(1)));
