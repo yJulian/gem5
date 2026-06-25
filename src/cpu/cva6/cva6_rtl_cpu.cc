@@ -31,7 +31,11 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
       tickEvent([this] { tick(); }, name() + ".tick"),
       core(nullptr),
       libHandle(nullptr),
-      destroyCorePointer(nullptr)
+      destroyCorePointer(nullptr),
+      retryPkt(nullptr),
+      retryPort(nullptr),
+      pendingWriteResponses(0),
+      writeBurstFinished(false)
 {
     // Load RTL Shared Library using dlopen
     libHandle = dlopen(params.rtl_library.c_str(), RTLD_LAZY | RTLD_LOCAL);
@@ -89,6 +93,54 @@ CVA6RtlCPU::~CVA6RtlCPU()
     }
 }
 
+bool
+CVA6RtlCPU::CpuPort::recvTimingResp(PacketPtr pkt)
+{
+    cpu->handleTimingResp(pkt, this);
+    return true;
+}
+
+void
+CVA6RtlCPU::CpuPort::recvReqRetry()
+{
+    cpu->handleReqRetry(this);
+}
+
+void
+CVA6RtlCPU::handleTimingResp(PacketPtr pkt, CpuPort *port)
+{
+    if (pkt->isRead()) {
+        read_data_buffer.clear();
+        read_data_buffer.resize(pkt->getSize());
+        std::memcpy(read_data_buffer.data(), pkt->getPtr<uint8_t>(),
+                    pkt->getSize());
+        r_data_ready = true;
+    } else if (pkt->isWrite()) {
+        if (pendingWriteResponses > 0) {
+            pendingWriteResponses--;
+        }
+        if (writeBurstFinished && pendingWriteResponses == 0) {
+            write_resp_pending = true;
+            writeBurstFinished = false;
+        }
+    }
+    delete pkt;
+}
+
+void
+CVA6RtlCPU::handleReqRetry(CpuPort *port)
+{
+    if (retryPkt && retryPort == port) {
+        PacketPtr pkt = retryPkt;
+        retryPkt = nullptr;
+        retryPort = nullptr;
+        if (!port->sendTimingReq(pkt)) {
+            retryPkt = pkt;
+            retryPort = port;
+        }
+    }
+}
+
 Port &
 CVA6RtlCPU::getPort(const std::string &if_name, PortID idx)
 {
@@ -114,8 +166,9 @@ CVA6RtlCPU::tick()
     cycleCount++;
 
 #ifdef DEBUG_CVA
-    if (cycleCount % 1000 == 0) {
-        std::cout << "[CVA6 CPU] Simulated clock cycles: " << std::dec << cycleCount << std::endl;
+    if (cycleCount % 100000 == 0) {
+        std::cout << "[CVA6 CPU] Simulated clock cycles: " << std::dec
+                  << cycleCount << std::endl;
     }
 #endif
 
@@ -163,11 +216,13 @@ CVA6RtlCPU::tick()
         }
 
         // Drive ready inputs
-        core->set_noc_resp_ar_ready_i(!ar_busy);
-        core->set_noc_resp_aw_ready_i(!aw_received && !write_resp_pending);
+        bool can_accept = !retryPkt;
+        core->set_noc_resp_ar_ready_i(!ar_busy && can_accept);
+        core->set_noc_resp_aw_ready_i(!aw_received && !write_resp_pending &&
+                                      can_accept);
         core->set_noc_resp_w_ready_i(
             (aw_received || core->get_noc_req_aw_valid_o()) &&
-            !write_resp_pending);
+            !write_resp_pending && can_accept);
     } else {
         // Inputs during reset
         core->set_noc_resp_r_valid_i(0);
@@ -190,46 +245,36 @@ CVA6RtlCPU::tick()
     // paths (such as core->noc_req_ar_valid_o and our driven inputs) have settled.
     if (resetDone) {
         // A. Read address (AR channel) handshake
-        if (!ar_busy && core->get_noc_req_ar_valid_o()) {
+        if (!ar_busy && !retryPkt && core->get_noc_req_ar_valid_o()) {
             uint64_t addr = core->get_noc_req_ar_addr_o();
             uint32_t bytes_per_beat = 1 << core->get_noc_req_ar_size_o();
             uint32_t total_bytes =
                 bytes_per_beat * (core->get_noc_req_ar_len_o() + 1);
 
-            RequestPtr req = std::make_shared<Request>(addr, total_bytes, 0, requestorId);
+            Request::Flags flags = 0;
+            if (addr < 0x80000000) {
+                flags.set(Request::UNCACHEABLE);
+            }
+            RequestPtr req = std::make_shared<Request>(addr, total_bytes,
+                                                       flags, requestorId);
             PacketPtr pkt = Packet::createRead(req);
             pkt->allocate();
 
             // Route to instPort if prot indicates instruction fetch, else dataPort
             CpuPort &port =
                 (core->get_noc_req_ar_prot_o() & 0x4) ? instPort : dataPort;
-            port.sendFunctional(pkt);
-
-            read_data_buffer.clear();
-            read_data_buffer.resize(total_bytes);
-            std::memcpy(read_data_buffer.data(), pkt->getPtr<uint8_t>(), total_bytes);
-
-            uint64_t first_word = 0;
-            std::memcpy(&first_word, read_data_buffer.data(), std::min(total_bytes, 8u));
-#ifdef DEBUG_CVA
-            std::cout << "[AR] Cycle=" << std::dec << cycleCount << " Addr=0x"
-                      << std::hex << addr << " id=0x"
-                      << (int)core->get_noc_req_ar_id_o()
-                      << " size=" << std::dec << bytes_per_beat
-                      << " len=" << (int)core->get_noc_req_ar_len_o()
-                      << " prot=" << (int)core->get_noc_req_ar_prot_o()
-                      << " -> first_word=0x" << std::hex << first_word
-                      << std::dec << std::endl;
-#endif
 
             read_id = core->get_noc_req_ar_id_o();
             read_len = core->get_noc_req_ar_len_o();
             read_size = core->get_noc_req_ar_size_o();
             read_beat = 0;
             ar_busy = true;
-            r_data_ready = false; // Will trigger 1-cycle delay next cycle
+            r_data_ready = false;
 
-            delete pkt;
+            if (!port.sendTimingReq(pkt)) {
+                retryPkt = pkt;
+                retryPort = &port;
+            }
         }
 
         // B. Read response (R channel) handshake
@@ -253,10 +298,7 @@ CVA6RtlCPU::tick()
             }
         }
 
-        // C. Update read latency state for next cycle
-        if (ar_busy && !r_data_ready) {
-            r_data_ready = true;
-        }
+        // C. (Read latency is handled by timing response callback)
 
         // F. Write response (B channel) handshake
         if (write_resp_pending && core->get_noc_req_b_ready_o()) {
@@ -267,14 +309,15 @@ CVA6RtlCPU::tick()
                       << std::endl;
 #endif
             // Re-drive AW/W ready inputs now that write_resp_pending is false
-            core->set_noc_resp_aw_ready_i(!aw_received);
-            core->set_noc_resp_w_ready_i(aw_received ||
-                                         core->get_noc_req_aw_valid_o());
+            bool can_accept = !retryPkt;
+            core->set_noc_resp_aw_ready_i(!aw_received && can_accept);
+            core->set_noc_resp_w_ready_i(
+                (aw_received || core->get_noc_req_aw_valid_o()) && can_accept);
             core->eval();
         }
 
         // D. Write address (AW channel) handshake
-        bool aw_handshake = !aw_received && !write_resp_pending &&
+        bool aw_handshake = !aw_received && !write_resp_pending && !retryPkt &&
                             core->get_noc_req_aw_valid_o();
         if (aw_handshake) {
             aw_received = true;
@@ -294,7 +337,7 @@ CVA6RtlCPU::tick()
         }
 
         // E. Write data (W channel) handshake
-        if (!write_resp_pending &&
+        if (!write_resp_pending && !retryPkt &&
             (aw_received || core->get_noc_req_aw_valid_o()) &&
             core->get_noc_req_w_valid_o()) {
 
@@ -306,48 +349,45 @@ CVA6RtlCPU::tick()
                 w_received_beats * bytes_per_beat;
             uint64_t data_val = core->get_noc_req_w_data_o();
 
-#ifdef DEBUG_CVA
-            std::cout << "[W Handshake] Cycle=" << std::dec << cycleCount
-                      << " Addr=0x" << std::hex << addr
-                      << " Beat=" << std::dec << w_received_beats
-                      << " Data=0x" << std::hex << data_val << std::dec << std::endl;
-#endif
-
             // Check exit command
             if (addr == 0x80001000 && data_val != 0) {
-#ifdef DEBUG_CVA
-                std::cout << "CVA6 Simulation finished! tohost = " << data_val
-                          << " (exit code = " << (data_val >> 1) << ")" << std::endl;
-                if (data_val == 1) {
-                    std::cout << "SUCCESS: data_val = 1!" << std::endl;
-                } else {
-                    std::cout << "FAILURE: program exited with code " << data_val << std::endl;
-                }
-                std::cout << "Total simulated clock cycles: " << cycleCount << std::endl;
-                std::cout << "============================================\n";
-#endif
                 exitSimLoop("CVA6 program completed successfully");
                 return;
             }
 
-            // Perform functional write
-            RequestPtr req = std::make_shared<Request>(addr, bytes_per_beat, 0, requestorId);
+            // Perform timing write
+            Request::Flags flags = 0;
+            if (addr < 0x80000000) {
+                flags.set(Request::UNCACHEABLE);
+            }
+            RequestPtr req = std::make_shared<Request>(addr, bytes_per_beat,
+                                                       flags, requestorId);
             PacketPtr pkt = Packet::createWrite(req);
             pkt->allocate();
             std::memcpy(pkt->getPtr<uint8_t>(), &data_val, bytes_per_beat);
-            dataPort.sendFunctional(pkt);
-            delete pkt;
+
+            pendingWriteResponses++;
+
+            if (!dataPort.sendTimingReq(pkt)) {
+                retryPkt = pkt;
+                retryPort = &dataPort;
+            }
 
             w_received_beats++;
 
-            // Wait, did we just finish the write burst?
+            // Did we just finish the write burst?
             uint32_t current_len =
                 aw_received ? write_len : core->get_noc_req_aw_len_o();
             if (w_received_beats == current_len + 1 ||
                 core->get_noc_req_w_last_o()) {
-                write_resp_pending = true;
+                writeBurstFinished = true;
                 aw_received = false;
                 w_received_beats = 0;
+
+                if (pendingWriteResponses == 0) {
+                    write_resp_pending = true;
+                    writeBurstFinished = false;
+                }
             }
         }
     }

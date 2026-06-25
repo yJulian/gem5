@@ -23,8 +23,8 @@ class CVA6RtlCPU : public ClockedObject
             RequestPort(name), cpu(cpu)
         { }
       protected:
-        bool recvTimingResp(PacketPtr pkt) override { return false; }
-        void recvReqRetry() override { }
+        bool recvTimingResp(PacketPtr pkt) override;
+        void recvReqRetry() override;
     };
 
     CpuPort instPort;
@@ -58,6 +58,14 @@ class CVA6RtlCPU : public ClockedObject
     EventFunctionWrapper tickEvent;
 
     RequestorID requestorId;
+
+    void handleTimingResp(PacketPtr pkt, CpuPort *port);
+    void handleReqRetry(CpuPort *port);
+
+    PacketPtr retryPkt;
+    CpuPort *retryPort;
+    uint32_t pendingWriteResponses;
+    bool writeBurstFinished;
 
   public:
     CVA6RtlCPU(const CVA6RtlCPUParams &params);
