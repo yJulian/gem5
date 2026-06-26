@@ -27,7 +27,8 @@ FifoAccelerator::FifoAccelerator(const Params &params)
       dma_read_pending(false),
       dma_read_data_buf(0),
       dma_write_pending(false),
-      tickEvent([this] { tick(); }, name() + ".tick")
+      tickEvent([this] { tick(); }, name() + ".tick"),
+      stats(this)
 {
     // Load RTL Shared Library using dlopen
     libHandle = dlopen(params.accel_library.c_str(), RTLD_LAZY | RTLD_LOCAL);
@@ -99,6 +100,20 @@ FifoAccelerator::~FifoAccelerator()
     }
 }
 
+FifoAccelerator::AccelStats::AccelStats(statistics::Group *parent)
+    : statistics::Group(parent),
+      ADD_STAT(numCycles, statistics::units::Cycle::get(),
+               "Number of Accelerator cycles simulated"),
+      ADD_STAT(numSlaveReads, statistics::units::Count::get(),
+               "Number of AXI slave MMIO read requests completed"),
+      ADD_STAT(numSlaveWrites, statistics::units::Count::get(),
+               "Number of AXI slave MMIO write requests completed"),
+      ADD_STAT(numMasterReads, statistics::units::Count::get(),
+               "Number of AXI master DMA read requests started"),
+      ADD_STAT(numMasterWrites, statistics::units::Count::get(),
+               "Number of AXI master DMA write requests started")
+{}
+
 void
 FifoAccelerator::startup()
 {
@@ -142,6 +157,7 @@ FifoAccelerator::performDmaWrite(Addr addr, const uint8_t *data, size_t size)
 Tick
 FifoAccelerator::read(PacketPtr pkt)
 {
+    stats.numSlaveReads++;
     Addr addr = pkt->getAddr() - pioAddr;
 
     // Phase 1: Address Handshake
@@ -179,6 +195,7 @@ FifoAccelerator::read(PacketPtr pkt)
 Tick
 FifoAccelerator::write(PacketPtr pkt)
 {
+    stats.numSlaveWrites++;
     Addr addr = pkt->getAddr() - pioAddr;
     uint64_t data = pkt->getUintX(ByteOrder::little);
 
@@ -227,6 +244,7 @@ void
 FifoAccelerator::stepClock()
 {
     cycleCount++;
+    stats.numCycles++;
 
     // 1. Falling Edge
     accel->set_clk_i(0);
@@ -238,6 +256,7 @@ FifoAccelerator::stepClock()
     if (resetDone) {
         // AR Handshake logic (Accept request)
         if (accel->get_m_axi_arvalid() && !dma_read_pending) {
+            stats.numMasterReads++;
             Addr addr = accel->get_m_axi_araddr();
             dma_read_data_buf = 0;
             performDmaRead(addr, (uint8_t *)&dma_read_data_buf, 8);
@@ -250,6 +269,7 @@ FifoAccelerator::stepClock()
         // AW and W Handshake logic (Accept request)
         if (accel->get_m_axi_awvalid() && accel->get_m_axi_wvalid() &&
             !dma_write_pending) {
+            stats.numMasterWrites++;
             Addr addr = accel->get_m_axi_awaddr();
             uint64_t data = accel->get_m_axi_wdata();
             performDmaWrite(addr, (const uint8_t *)&data, 8);

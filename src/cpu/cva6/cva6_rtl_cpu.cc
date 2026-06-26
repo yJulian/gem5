@@ -38,7 +38,8 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
       retryPkt(nullptr),
       retryPort(nullptr),
       pendingWriteResponses(0),
-      writeBurstFinished(false)
+      writeBurstFinished(false),
+      stats(this)
 {
     // Load RTL Shared Library using dlopen
     libHandle = dlopen(params.rtl_library.c_str(), RTLD_LAZY | RTLD_LOCAL);
@@ -96,6 +97,60 @@ CVA6RtlCPU::~CVA6RtlCPU()
     }
 }
 
+CVA6RtlCPU::CPUStats::CPUStats(statistics::Group *parent)
+    : statistics::Group(parent),
+      ADD_STAT(numCycles, statistics::units::Cycle::get(),
+               "Number of CPU cycles simulated"),
+      ADD_STAT(numIllegalInst, statistics::units::Count::get(),
+               "Number of illegal instruction exception commits"),
+      ADD_STAT(numEbreak, statistics::units::Count::get(),
+               "Number of ebreak instruction commits"),
+      ADD_STAT(numReadReqs, statistics::units::Count::get(),
+               "Total AXI read requests (AR handshakes) completed"),
+      ADD_STAT(numReadReqsInst, statistics::units::Count::get(),
+               "Number of AXI instruction read requests completed"),
+      ADD_STAT(numReadReqsData, statistics::units::Count::get(),
+               "Number of AXI data read requests completed"),
+      ADD_STAT(numWriteReqs, statistics::units::Count::get(),
+               "Total AXI write requests (AW handshakes) completed"),
+      ADD_STAT(numReadBeats, statistics::units::Count::get(),
+               "Total read beats received (R handshakes)"),
+      ADD_STAT(numWriteBeats, statistics::units::Count::get(),
+               "Total write beats sent (W handshakes)"),
+      ADD_STAT(numWriteResps, statistics::units::Count::get(),
+               "Total write responses received (B handshakes)"),
+      ADD_STAT(numInstPortRetries, statistics::units::Count::get(),
+               "Number of instruction port timing request retries"),
+      ADD_STAT(numDataPortRetries, statistics::units::Count::get(),
+               "Number of data port timing request retries"),
+      ADD_STAT(readReqSizes, statistics::units::Count::get(),
+               "Breakdown of read requests by transaction size in bytes"),
+      ADD_STAT(writeReqSizes, statistics::units::Count::get(),
+               "Breakdown of write requests by transaction size in bytes"),
+      ADD_STAT(avgReadBurstLen,
+               statistics::units::Rate<statistics::units::Count,
+                                       statistics::units::Count>::get(),
+               "Average read burst length (beats per request)",
+               numReadBeats / numReadReqs),
+      ADD_STAT(avgWriteBurstLen,
+               statistics::units::Rate<statistics::units::Count,
+                                       statistics::units::Count>::get(),
+               "Average write burst length (beats per request)",
+               numWriteBeats / numWriteReqs)
+{
+    readReqSizes
+        .init(8) // indices 0 to 7 represent 1 << index bytes (1 to 128 bytes)
+        .flags(statistics::total | statistics::pdf | statistics::nozero);
+    writeReqSizes.init(8).flags(statistics::total | statistics::pdf |
+                                statistics::nozero);
+
+    for (int i = 0; i < 8; ++i) {
+        std::string size_str = std::to_string(1 << i) + "B";
+        readReqSizes.subname(i, size_str);
+        writeReqSizes.subname(i, size_str);
+    }
+}
+
 bool
 CVA6RtlCPU::CpuPort::recvTimingResp(PacketPtr pkt)
 {
@@ -140,6 +195,11 @@ CVA6RtlCPU::handleReqRetry(CpuPort *port)
         if (!port->sendTimingReq(pkt)) {
             retryPkt = pkt;
             retryPort = port;
+            if (port == &instPort) {
+                stats.numInstPortRetries++;
+            } else {
+                stats.numDataPortRetries++;
+            }
         }
     }
 }
@@ -167,6 +227,7 @@ void
 CVA6RtlCPU::tick()
 {
     cycleCount++;
+    stats.numCycles++;
 
 #if DEBUG_CVA
     if (cycleCount % 100000 == 0) {
@@ -274,9 +335,25 @@ CVA6RtlCPU::tick()
             ar_busy = true;
             r_data_ready = false;
 
+            stats.numReadReqs++;
+            if (core->get_noc_req_ar_prot_o() & 0x4) {
+                stats.numReadReqsInst++;
+            } else {
+                stats.numReadReqsData++;
+            }
+            uint32_t ar_size = core->get_noc_req_ar_size_o();
+            if (ar_size < 8) {
+                stats.readReqSizes[ar_size]++;
+            }
+
             if (!port.sendTimingReq(pkt)) {
                 retryPkt = pkt;
                 retryPort = &port;
+                if (&port == &instPort) {
+                    stats.numInstPortRetries++;
+                } else {
+                    stats.numDataPortRetries++;
+                }
             }
 
 #if DEBUG_CVA
@@ -289,6 +366,7 @@ CVA6RtlCPU::tick()
 
         // B. Read response (R channel) handshake
         if (ar_busy && r_data_ready && core->get_noc_req_r_ready_o()) {
+            stats.numReadBeats++;
             uint32_t bytes_per_beat = 1 << read_size;
             uint64_t beat_val = 0;
             std::memcpy(&beat_val, read_data_buffer.data() + read_beat * bytes_per_beat, std::min(bytes_per_beat, 8u));
@@ -312,6 +390,7 @@ CVA6RtlCPU::tick()
 
         // F. Write response (B channel) handshake
         if (write_resp_pending && core->get_noc_req_b_ready_o()) {
+            stats.numWriteResps++;
             write_resp_pending = false;
 #if DEBUG_CVA
             std::cout << "[B Handshake] Cycle=" << std::dec << cycleCount
@@ -330,6 +409,11 @@ CVA6RtlCPU::tick()
         bool aw_handshake = !aw_received && !write_resp_pending && !retryPkt &&
                             core->get_noc_req_aw_valid_o();
         if (aw_handshake) {
+            stats.numWriteReqs++;
+            uint32_t aw_size = core->get_noc_req_aw_size_o();
+            if (aw_size < 8) {
+                stats.writeReqSizes[aw_size]++;
+            }
             aw_received = true;
             write_addr = core->get_noc_req_aw_addr_o();
             write_id = core->get_noc_req_aw_id_o();
@@ -351,6 +435,7 @@ CVA6RtlCPU::tick()
             (aw_received || core->get_noc_req_aw_valid_o()) &&
             core->get_noc_req_w_valid_o()) {
 
+            stats.numWriteBeats++;
             uint32_t current_size =
                 aw_received ? write_size : core->get_noc_req_aw_size_o();
             uint32_t bytes_per_beat = 1 << current_size;
@@ -381,6 +466,7 @@ CVA6RtlCPU::tick()
             if (!dataPort.sendTimingReq(pkt)) {
                 retryPkt = pkt;
                 retryPort = &dataPort;
+                stats.numDataPortRetries++;
             }
 
             uint32_t current_len =
@@ -419,11 +505,13 @@ CVA6RtlCPU::tick()
     core->dump_trace(cycleCount * 10 + 5);
 
     if (resetDone && core->get_illegal_instr_o()) {
+        stats.numIllegalInst++;
         warn("CVA6 RTL CPU: Illegal instruction detected at PC: 0x%016llx\n",
              (unsigned long long)core->get_illegal_instr_pc_o());
     }
 
     if (resetDone && core->get_ebreak_o()) {
+        stats.numEbreak++;
         exitSimLoop("CVA6 program hit ebreak instruction");
         return;
     }

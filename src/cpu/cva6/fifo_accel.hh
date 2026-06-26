@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "base/statistics.hh"
 #include "cpu/cva6/fifo_accel_interface.hh"
 #include "dev/dma_device.hh"
 #include "params/FifoAccelerator.hh"
@@ -36,6 +37,17 @@ class FifoAccelerator : public DmaDevice
     void stepClock();
 
     RequestorID requestorId;
+
+    struct AccelStats : public statistics::Group
+    {
+        AccelStats(statistics::Group *parent);
+
+        statistics::Scalar numCycles;
+        statistics::Scalar numSlaveReads;
+        statistics::Scalar numSlaveWrites;
+        statistics::Scalar numMasterReads;
+        statistics::Scalar numMasterWrites;
+    } stats;
 
     void performDmaRead(Addr addr, uint8_t *data, size_t size);
     void performDmaWrite(Addr addr, const uint8_t *data, size_t size);

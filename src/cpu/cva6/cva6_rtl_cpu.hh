@@ -3,6 +3,7 @@
 
 #include <vector>
 
+#include "base/statistics.hh"
 #include "cpu/cva6/cva6_rtl_core_interface.hh"
 #include "mem/port.hh"
 #include "params/CVA6RtlCPU.hh"
@@ -66,6 +67,39 @@ class CVA6RtlCPU : public ClockedObject
     CpuPort *retryPort;
     uint32_t pendingWriteResponses;
     bool writeBurstFinished;
+
+    struct CPUStats : public statistics::Group
+    {
+        CPUStats(statistics::Group *parent);
+
+        // RTL/Simulation Stats
+        statistics::Scalar numCycles;
+        statistics::Scalar numIllegalInst;
+        statistics::Scalar numEbreak;
+
+        // AXI Request Stats
+        statistics::Scalar numReadReqs;
+        statistics::Scalar numReadReqsInst;
+        statistics::Scalar numReadReqsData;
+        statistics::Scalar numWriteReqs;
+
+        // AXI Beat Stats
+        statistics::Scalar numReadBeats;
+        statistics::Scalar numWriteBeats;
+        statistics::Scalar numWriteResps;
+
+        // AXI Retry/Stall Stats
+        statistics::Scalar numInstPortRetries;
+        statistics::Scalar numDataPortRetries;
+
+        // AXI Breakdowns by Size (Vector stats)
+        statistics::Vector readReqSizes;
+        statistics::Vector writeReqSizes;
+
+        // Formulas
+        statistics::Formula avgReadBurstLen;
+        statistics::Formula avgWriteBurstLen;
+    } stats;
 
   public:
     CVA6RtlCPU(const CVA6RtlCPUParams &params);
