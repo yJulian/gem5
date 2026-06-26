@@ -53,6 +53,7 @@ class CVA6RtlCoreInterface
     virtual uint64_t get_noc_req_aw_addr_o() = 0;
     virtual uint64_t get_noc_req_w_data_o() = 0;
     virtual uint64_t get_noc_req_ar_addr_o() = 0;
+    virtual uint8_t get_ebreak_o() = 0;
 
     // Control
     virtual void eval() = 0;

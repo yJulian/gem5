@@ -215,6 +215,11 @@ class CVA6RtlCoreImpl : public CVA6RtlCoreInterface
     {
         return core->noc_req_ar_addr_o;
     }
+    uint8_t
+    get_ebreak_o() override
+    {
+        return core->ebreak_o;
+    }
 
     // Control
     void

@@ -1,5 +1,8 @@
 #include "cpu/cva6/cva6_rtl_cpu.hh"
-#define DEBUG_CVA 0
+
+#ifndef DEBUG_CVA
+#define DEBUG_CVA 1
+#endif
 
 #include <dlfcn.h>
 
@@ -59,7 +62,7 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
 
     if (params.trace_enable) {
         core->setup_trace(params.trace_file);
-#ifdef DEBUG_CVA
+#if DEBUG_CVA
         std::cout
             << "[CVA6 CPU] Tracing enabled (delegated to library), writing to "
             << params.trace_file << std::endl;
@@ -165,7 +168,7 @@ CVA6RtlCPU::tick()
 {
     cycleCount++;
 
-#ifdef DEBUG_CVA
+#if DEBUG_CVA
     if (cycleCount % 100000 == 0) {
         std::cout << "[CVA6 CPU] Simulated clock cycles: " << std::dec
                   << cycleCount << std::endl;
@@ -275,6 +278,13 @@ CVA6RtlCPU::tick()
                 retryPkt = pkt;
                 retryPort = &port;
             }
+
+#if DEBUG_CVA
+            std::cout << "[AR Handshake] Cycle=" << std::dec << cycleCount
+                      << " Addr=0x" << std::hex << addr << " id=0x" << read_id
+                      << " size=" << std::dec << (1 << read_size)
+                      << " len=" << read_len << std::endl;
+#endif
         }
 
         // B. Read response (R channel) handshake
@@ -282,7 +292,7 @@ CVA6RtlCPU::tick()
             uint32_t bytes_per_beat = 1 << read_size;
             uint64_t beat_val = 0;
             std::memcpy(&beat_val, read_data_buffer.data() + read_beat * bytes_per_beat, std::min(bytes_per_beat, 8u));
-#ifdef DEBUG_CVA
+#if DEBUG_CVA
             std::cout << "[R Handshake] Cycle=" << std::dec << cycleCount
                       << " Beat=" << read_beat << "/" << read_len << " id=0x"
                       << std::hex << (int)read_id << " Data=0x" << beat_val
@@ -303,7 +313,7 @@ CVA6RtlCPU::tick()
         // F. Write response (B channel) handshake
         if (write_resp_pending && core->get_noc_req_b_ready_o()) {
             write_resp_pending = false;
-#ifdef DEBUG_CVA
+#if DEBUG_CVA
             std::cout << "[B Handshake] Cycle=" << std::dec << cycleCount
                       << " id=0x" << std::hex << write_id << std::dec
                       << std::endl;
@@ -327,7 +337,7 @@ CVA6RtlCPU::tick()
             write_len = core->get_noc_req_aw_len_o();
             w_received_beats = 0;
 
-#ifdef DEBUG_CVA
+#if DEBUG_CVA
             std::cout << "[AW Handshake] Cycle=" << std::dec << cycleCount
                       << " Addr=0x" << std::hex << write_addr
                       << " id=0x" << write_id
@@ -373,11 +383,22 @@ CVA6RtlCPU::tick()
                 retryPort = &dataPort;
             }
 
+            uint32_t current_len =
+                aw_received ? write_len : core->get_noc_req_aw_len_o();
+
+#if DEBUG_CVA
+            std::cout << "[W Handshake] Cycle=" << std::dec << cycleCount
+                      << " Data=0x" << std::hex << data_val
+                      << " Beat=" << w_received_beats << "/" << current_len
+                      << " last=" << std::dec
+                      << (w_received_beats == current_len ||
+                          core->get_noc_req_w_last_o())
+                      << std::endl;
+#endif
+
             w_received_beats++;
 
             // Did we just finish the write burst?
-            uint32_t current_len =
-                aw_received ? write_len : core->get_noc_req_aw_len_o();
             if (w_received_beats == current_len + 1 ||
                 core->get_noc_req_w_last_o()) {
                 writeBurstFinished = true;
@@ -396,6 +417,11 @@ CVA6RtlCPU::tick()
     core->set_clk_i(1);
     core->eval();
     core->dump_trace(cycleCount * 10 + 5);
+
+    if (resetDone && core->get_ebreak_o()) {
+        exitSimLoop("CVA6 program hit ebreak instruction");
+        return;
+    }
 
     // 5. Schedule next cycle
     schedule(tickEvent, clockEdge(Cycles(1)));
