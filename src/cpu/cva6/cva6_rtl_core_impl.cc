@@ -5,6 +5,9 @@
 #include "Vcva6_top.h"
 #include "cva6_rtl_core_interface.hh"
 #include "verilated.h"
+#if VM_SAVABLE
+#include "verilated_save.h"
+#endif
 
 #if VM_TRACE
 #include "verilated_vcd_c.h"
@@ -269,6 +272,46 @@ class CVA6RtlCoreImpl : public CVA6RtlCoreInterface
             delete tfp;
             tfp = nullptr;
         }
+#endif
+    }
+
+    void
+    serialize(const std::string &filepath) override
+    {
+#if VM_SAVABLE
+        VerilatedSave v_save;
+        v_save.open(filepath);
+        if (!v_save.isOpen()) {
+            std::cerr << "Error: Can't open verilated checkpoint file '" << filepath << "' for writing" << std::endl;
+            return;
+        }
+        v_save << *core;
+        v_save.close();
+#endif
+    }
+
+    void
+    unserialize(const std::string &filepath) override
+    {
+#if VM_SAVABLE
+        VerilatedRestore v_restore;
+        v_restore.open(filepath);
+        if (!v_restore.isOpen()) {
+            std::cerr << "Error: Can't open verilated checkpoint file '" << filepath << "' for reading" << std::endl;
+            return;
+        }
+        v_restore >> *core;
+        v_restore.close();
+#endif
+    }
+
+    bool
+    is_savable() const override
+    {
+#if VM_SAVABLE
+        return true;
+#else
+        return false;
 #endif
     }
 };

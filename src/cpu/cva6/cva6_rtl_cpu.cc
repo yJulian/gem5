@@ -8,10 +8,14 @@
 
 #include <cstring>
 #include <iostream>
+#include <fstream>
 
 #include "base/logging.hh"
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"
+#include "sim/stat_control.hh"
+#include "sim/pseudo_inst.hh"
+#include "gem5/asm/generic/m5ops.h"
 
 namespace gem5
 {
@@ -315,44 +319,73 @@ CVA6RtlCPU::tick()
             uint32_t total_bytes =
                 bytes_per_beat * (core->get_noc_req_ar_len_o() + 1);
 
-            Request::Flags flags = 0;
-            if (addr < 0x80000000) {
-                flags.set(Request::UNCACHEABLE);
-            }
-            RequestPtr req = std::make_shared<Request>(addr, total_bytes,
-                                                       flags, requestorId);
-            PacketPtr pkt = Packet::createRead(req);
-            pkt->allocate();
+            AddrRange m5op_range = params().system->m5opRange();
+            if (m5op_range.contains(addr)) {
+                uint8_t func;
+                pseudo_inst::decodeAddrOffset(addr - m5op_range.start(), func);
+                uint64_t ret_val = handleM5op(func, 0);
 
-            // Route to instPort if prot indicates instruction fetch, else dataPort
-            CpuPort &port =
-                (core->get_noc_req_ar_prot_o() & 0x4) ? instPort : dataPort;
+                read_data_buffer.resize(total_bytes);
+                std::memset(read_data_buffer.data(), 0, total_bytes);
+                std::memcpy(read_data_buffer.data(), &ret_val, std::min((size_t)total_bytes, sizeof(ret_val)));
 
-            read_id = core->get_noc_req_ar_id_o();
-            read_len = core->get_noc_req_ar_len_o();
-            read_size = core->get_noc_req_ar_size_o();
-            read_beat = 0;
-            ar_busy = true;
-            r_data_ready = false;
+                read_id = core->get_noc_req_ar_id_o();
+                read_len = core->get_noc_req_ar_len_o();
+                read_size = core->get_noc_req_ar_size_o();
+                read_beat = 0;
+                ar_busy = true;
+                r_data_ready = true;
 
-            stats.numReadReqs++;
-            if (core->get_noc_req_ar_prot_o() & 0x4) {
-                stats.numReadReqsInst++;
-            } else {
-                stats.numReadReqsData++;
-            }
-            uint32_t ar_size = core->get_noc_req_ar_size_o();
-            if (ar_size < 8) {
-                stats.readReqSizes[ar_size]++;
-            }
-
-            if (!port.sendTimingReq(pkt)) {
-                retryPkt = pkt;
-                retryPort = &port;
-                if (&port == &instPort) {
-                    stats.numInstPortRetries++;
+                stats.numReadReqs++;
+                if (core->get_noc_req_ar_prot_o() & 0x4) {
+                    stats.numReadReqsInst++;
                 } else {
-                    stats.numDataPortRetries++;
+                    stats.numReadReqsData++;
+                }
+                uint32_t ar_size = core->get_noc_req_ar_size_o();
+                if (ar_size < 8) {
+                    stats.readReqSizes[ar_size]++;
+                }
+            } else {
+                Request::Flags flags = 0;
+                if (addr < 0x80000000) {
+                    flags.set(Request::UNCACHEABLE);
+                }
+                RequestPtr req = std::make_shared<Request>(addr, total_bytes,
+                                                           flags, requestorId);
+                PacketPtr pkt = Packet::createRead(req);
+                pkt->allocate();
+
+                // Route to instPort if prot indicates instruction fetch, else dataPort
+                CpuPort &port =
+                    (core->get_noc_req_ar_prot_o() & 0x4) ? instPort : dataPort;
+
+                read_id = core->get_noc_req_ar_id_o();
+                read_len = core->get_noc_req_ar_len_o();
+                read_size = core->get_noc_req_ar_size_o();
+                read_beat = 0;
+                ar_busy = true;
+                r_data_ready = false;
+
+                stats.numReadReqs++;
+                if (core->get_noc_req_ar_prot_o() & 0x4) {
+                    stats.numReadReqsInst++;
+                } else {
+                    stats.numReadReqsData++;
+                }
+                uint32_t ar_size = core->get_noc_req_ar_size_o();
+                if (ar_size < 8) {
+                    stats.readReqSizes[ar_size]++;
+                }
+
+                if (!port.sendTimingReq(pkt)) {
+                    retryPkt = pkt;
+                    retryPort = &port;
+                    if (&port == &instPort) {
+                        stats.numInstPortRetries++;
+                    } else {
+                        stats.numDataPortRetries++;
+                    }
                 }
             }
 
@@ -444,56 +477,79 @@ CVA6RtlCPU::tick()
                 w_received_beats * bytes_per_beat;
             uint64_t data_val = core->get_noc_req_w_data_o();
 
-            // Check exit command
-            if (addr == 0x80001000 && data_val != 0) {
-                exitSimLoop("CVA6 program completed successfully");
-                return;
-            }
+            AddrRange m5op_range = params().system->m5opRange();
+            if (m5op_range.contains(addr)) {
+                uint8_t func;
+                pseudo_inst::decodeAddrOffset(addr - m5op_range.start(), func);
+                handleM5op(func, data_val);
 
-            // Perform timing write
-            Request::Flags flags = 0;
-            if (addr < 0x80000000) {
-                flags.set(Request::UNCACHEABLE);
-            }
-            RequestPtr req = std::make_shared<Request>(addr, bytes_per_beat,
-                                                       flags, requestorId);
-            PacketPtr pkt = Packet::createWrite(req);
-            pkt->allocate();
-            std::memcpy(pkt->getPtr<uint8_t>(), &data_val, bytes_per_beat);
+                uint32_t current_len =
+                    aw_received ? write_len : core->get_noc_req_aw_len_o();
 
-            pendingWriteResponses++;
+                w_received_beats++;
+                if (w_received_beats == current_len + 1 ||
+                    core->get_noc_req_w_last_o()) {
+                    writeBurstFinished = true;
+                    aw_received = false;
+                    w_received_beats = 0;
 
-            if (!dataPort.sendTimingReq(pkt)) {
-                retryPkt = pkt;
-                retryPort = &dataPort;
-                stats.numDataPortRetries++;
-            }
+                    if (pendingWriteResponses == 0) {
+                        write_resp_pending = true;
+                        writeBurstFinished = false;
+                    }
+                }
+            } else {
+                // Check exit command
+                if (addr == 0x80001000 && data_val != 0) {
+                    exitSimLoop("CVA6 program completed successfully");
+                    return;
+                }
 
-            uint32_t current_len =
-                aw_received ? write_len : core->get_noc_req_aw_len_o();
+                // Perform timing write
+                Request::Flags flags = 0;
+                if (addr < 0x80000000) {
+                    flags.set(Request::UNCACHEABLE);
+                }
+                RequestPtr req = std::make_shared<Request>(addr, bytes_per_beat,
+                                                           flags, requestorId);
+                PacketPtr pkt = Packet::createWrite(req);
+                pkt->allocate();
+                std::memcpy(pkt->getPtr<uint8_t>(), &data_val, bytes_per_beat);
+
+                pendingWriteResponses++;
+
+                if (!dataPort.sendTimingReq(pkt)) {
+                    retryPkt = pkt;
+                    retryPort = &dataPort;
+                    stats.numDataPortRetries++;
+                }
+
+                uint32_t current_len =
+                    aw_received ? write_len : core->get_noc_req_aw_len_o();
 
 #if DEBUG_CVA
-            std::cout << "[W Handshake] Cycle=" << std::dec << cycleCount
-                      << " Data=0x" << std::hex << data_val
-                      << " Beat=" << w_received_beats << "/" << current_len
-                      << " last=" << std::dec
-                      << (w_received_beats == current_len ||
-                          core->get_noc_req_w_last_o())
-                      << std::endl;
+                std::cout << "[W Handshake] Cycle=" << std::dec << cycleCount
+                          << " Data=0x" << std::hex << data_val
+                          << " Beat=" << w_received_beats << "/" << current_len
+                          << " last=" << std::dec
+                          << (w_received_beats == current_len ||
+                              core->get_noc_req_w_last_o())
+                          << std::endl;
 #endif
 
-            w_received_beats++;
+                w_received_beats++;
 
-            // Did we just finish the write burst?
-            if (w_received_beats == current_len + 1 ||
-                core->get_noc_req_w_last_o()) {
-                writeBurstFinished = true;
-                aw_received = false;
-                w_received_beats = 0;
+                // Did we just finish the write burst?
+                if (w_received_beats == current_len + 1 ||
+                    core->get_noc_req_w_last_o()) {
+                    writeBurstFinished = true;
+                    aw_received = false;
+                    w_received_beats = 0;
 
-                if (pendingWriteResponses == 0) {
-                    write_resp_pending = true;
-                    writeBurstFinished = false;
+                    if (pendingWriteResponses == 0) {
+                        write_resp_pending = true;
+                        writeBurstFinished = false;
+                    }
                 }
             }
         }
@@ -518,6 +574,157 @@ CVA6RtlCPU::tick()
 
     // 5. Schedule next cycle
     schedule(tickEvent, clockEdge(Cycles(1)));
+}
+
+uint64_t
+CVA6RtlCPU::handleM5op(uint8_t func, uint64_t args)
+{
+    uint32_t arg1 = (uint32_t)(args & 0xFFFFFFFF);
+    uint32_t arg2 = (uint32_t)((args >> 32) & 0xFFFFFFFF);
+
+    DPRINTF(PseudoInst, "CVA6RtlCPU: handleM5op func=0x%x, arg1=0x%x, arg2=0x%x\n",
+            func, arg1, arg2);
+
+    switch (func) {
+        case M5OP_EXIT: {
+            Tick when = curTick() + arg1 * sim_clock::as_int::ns;
+            exitSimLoop("m5_exit instruction encountered", 0, when, 0, true);
+            break;
+        }
+        case M5OP_FAIL: {
+            Tick when = curTick() + arg1 * sim_clock::as_int::ns;
+            exitSimLoop("m5_fail instruction encountered", arg2, when, 0, true);
+            break;
+        }
+        case M5OP_RESET_STATS: {
+            Tick when = curTick() + arg1 * sim_clock::as_int::ns;
+            Tick repeat = arg2 * sim_clock::as_int::ns;
+            statistics::schedStatEvent(false, true, when, repeat);
+            break;
+        }
+        case M5OP_DUMP_STATS: {
+            Tick when = curTick() + arg1 * sim_clock::as_int::ns;
+            Tick repeat = arg2 * sim_clock::as_int::ns;
+            statistics::schedStatEvent(true, false, when, repeat);
+            break;
+        }
+        case M5OP_DUMP_RESET_STATS: {
+            Tick when = curTick() + arg1 * sim_clock::as_int::ns;
+            Tick repeat = arg2 * sim_clock::as_int::ns;
+            statistics::schedStatEvent(true, true, when, repeat);
+            break;
+        }
+        case M5OP_CHECKPOINT: {
+            Tick when = curTick() + arg1 * sim_clock::as_int::ns;
+            Tick repeat = arg2 * sim_clock::as_int::ns;
+            exitSimLoop("checkpoint", 0, when, repeat);
+            break;
+        }
+        case M5OP_WORK_BEGIN: {
+            System *sys = params().system;
+            if (sys->params().exit_on_work_items) {
+                exitSimLoop("workbegin", static_cast<int>(arg1));
+                return 0;
+            }
+            sys->workItemBegin(arg2, arg1);
+            if (sys->params().work_item_id == -1 || sys->params().work_item_id == arg1) {
+                uint64_t systemWorkBeginCount = sys->incWorkItemsBegin();
+                if (systemWorkBeginCount == sys->params().work_begin_exit_count) {
+                    exitSimLoop("work started count reach");
+                }
+            }
+            break;
+        }
+        case M5OP_WORK_END: {
+            System *sys = params().system;
+            if (sys->params().exit_on_work_items) {
+                exitSimLoop("workend", static_cast<int>(arg1));
+                return 0;
+            }
+            sys->workItemEnd(arg2, arg1);
+            if (sys->params().work_item_id == -1 || sys->params().work_item_id == arg1) {
+                uint64_t systemWorkEndCount = sys->incWorkItemsEnd();
+                if (systemWorkEndCount == sys->params().work_end_exit_count) {
+                    exitSimLoop("work ended count reach");
+                }
+            }
+            break;
+        }
+        default:
+            warn("CVA6RtlCPU: Unhandled or unsupported m5op func: 0x%x\n", func);
+            break;
+    }
+    return 0;
+}
+
+void
+CVA6RtlCPU::serialize(CheckpointOut &cp) const
+{
+    SERIALIZE_SCALAR(cycleCount);
+    SERIALIZE_SCALAR(resetDone);
+    SERIALIZE_SCALAR(ar_busy);
+    SERIALIZE_SCALAR(r_data_ready);
+    SERIALIZE_SCALAR(read_id);
+    SERIALIZE_SCALAR(read_len);
+    SERIALIZE_SCALAR(read_size);
+    SERIALIZE_SCALAR(read_beat);
+    SERIALIZE_CONTAINER(read_data_buffer);
+    SERIALIZE_SCALAR(aw_received);
+    SERIALIZE_SCALAR(write_addr);
+    SERIALIZE_SCALAR(write_id);
+    SERIALIZE_SCALAR(write_size);
+    SERIALIZE_SCALAR(write_len);
+    SERIALIZE_SCALAR(w_received_beats);
+    SERIALIZE_SCALAR(write_resp_pending);
+    SERIALIZE_SCALAR(pendingWriteResponses);
+    SERIALIZE_SCALAR(writeBurstFinished);
+
+    if (retryPkt != nullptr) {
+        warn("CVA6RtlCPU: Serializing checkpoint while retryPkt is pending! This is not fully supported.\n");
+    }
+
+    if (core && core->is_savable()) {
+        std::string filename = name() + ".verilated.bin";
+        std::string filepath = CheckpointIn::dir() + "/" + filename;
+        core->serialize(filepath);
+
+        // Write the filename to checkpoint so unserialize can find it
+        SERIALIZE_SCALAR(filename);
+    } else {
+        warn("CVA6RtlCPU: Core is not savable (built with SAVABLE=0). Verilated state NOT serialized!\n");
+    }
+}
+
+void
+CVA6RtlCPU::unserialize(CheckpointIn &cp)
+{
+    UNSERIALIZE_SCALAR(cycleCount);
+    UNSERIALIZE_SCALAR(resetDone);
+    UNSERIALIZE_SCALAR(ar_busy);
+    UNSERIALIZE_SCALAR(r_data_ready);
+    UNSERIALIZE_SCALAR(read_id);
+    UNSERIALIZE_SCALAR(read_len);
+    UNSERIALIZE_SCALAR(read_size);
+    UNSERIALIZE_SCALAR(read_beat);
+    UNSERIALIZE_CONTAINER(read_data_buffer);
+    UNSERIALIZE_SCALAR(aw_received);
+    UNSERIALIZE_SCALAR(write_addr);
+    UNSERIALIZE_SCALAR(write_id);
+    UNSERIALIZE_SCALAR(write_size);
+    UNSERIALIZE_SCALAR(write_len);
+    UNSERIALIZE_SCALAR(w_received_beats);
+    UNSERIALIZE_SCALAR(write_resp_pending);
+    UNSERIALIZE_SCALAR(pendingWriteResponses);
+    UNSERIALIZE_SCALAR(writeBurstFinished);
+
+    if (core && core->is_savable()) {
+        std::string filename;
+        UNSERIALIZE_SCALAR(filename);
+        std::string filepath = cp.getCptDir() + "/" + filename;
+        core->unserialize(filepath);
+    } else {
+        fatal("CVA6RtlCPU: Cannot restore checkpoint because the model was not compiled with checkpoint support (SAVABLE=1).\n");
+    }
 }
 
 } // namespace gem5

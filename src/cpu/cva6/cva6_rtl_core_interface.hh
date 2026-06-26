@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <string>
+#include <iostream>
 
 namespace gem5
 {
@@ -64,6 +65,11 @@ class CVA6RtlCoreInterface
     virtual void setup_trace(const std::string &trace_file) = 0;
     virtual void dump_trace(uint64_t time) = 0;
     virtual void close_trace() = 0;
+
+    // Serialization / Checkpoint support
+    virtual void serialize(const std::string &filepath) = 0;
+    virtual void unserialize(const std::string &filepath) = 0;
+    virtual bool is_savable() const = 0;
 };
 
 } // namespace gem5

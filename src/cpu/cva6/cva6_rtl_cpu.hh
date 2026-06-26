@@ -62,6 +62,7 @@ class CVA6RtlCPU : public ClockedObject
 
     void handleTimingResp(PacketPtr pkt, CpuPort *port);
     void handleReqRetry(CpuPort *port);
+    uint64_t handleM5op(uint8_t func, uint64_t args);
 
     PacketPtr retryPkt;
     CpuPort *retryPort;
@@ -102,12 +103,18 @@ class CVA6RtlCPU : public ClockedObject
     } stats;
 
   public:
-    CVA6RtlCPU(const CVA6RtlCPUParams &params);
+    typedef CVA6RtlCPUParams Params;
+    const Params &params() const { return reinterpret_cast<const Params &>(_params); }
+
+    CVA6RtlCPU(const Params &params);
     ~CVA6RtlCPU();
 
     Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
 
     void startup() override;
+
+    void serialize(CheckpointOut &cp) const override;
+    void unserialize(CheckpointIn &cp) override;
 };
 
 } // namespace gem5
