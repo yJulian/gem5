@@ -220,6 +220,16 @@ class CVA6RtlCoreImpl : public CVA6RtlCoreInterface
     {
         return core->ebreak_o;
     }
+    uint8_t
+    get_illegal_instr_o() override
+    {
+        return core->illegal_instr_o;
+    }
+    uint64_t
+    get_illegal_instr_pc_o() override
+    {
+        return core->illegal_instr_pc_o;
+    }
 
     // Control
     void

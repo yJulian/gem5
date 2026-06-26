@@ -418,6 +418,11 @@ CVA6RtlCPU::tick()
     core->eval();
     core->dump_trace(cycleCount * 10 + 5);
 
+    if (resetDone && core->get_illegal_instr_o()) {
+        warn("CVA6 RTL CPU: Illegal instruction detected at PC: 0x%016llx\n",
+             (unsigned long long)core->get_illegal_instr_pc_o());
+    }
+
     if (resetDone && core->get_ebreak_o()) {
         exitSimLoop("CVA6 program hit ebreak instruction");
         return;
