@@ -28,7 +28,7 @@ class CVA6RtlCPU(BaseCPU):
     trace_enable = Param.Bool(False, "Enable VCD tracing of CVA6 RTL signals")
     trace_file = Param.String("cva6_trace.vcd", "VCD trace filename")
     rtl_library = Param.String(
-        "cva6/work-ver-core/libVcva6_top.so",
+        "cva_verilate/work-ver-core/libVcva6_top.so",
         "Path to the Verilator CVA6 shared library",
     )
 

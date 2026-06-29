@@ -13,6 +13,7 @@
 #include <iostream>
 
 #include "base/logging.hh"
+#include "base/str.hh"
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"
 
@@ -490,8 +491,8 @@ CVA6RtlCPU::tick()
 
             // Check exit command
             if (addr == 0x80001000 && data_val != 0) {
-                exitSimLoop("CVA6 program completed successfully at PC:
-                     0x%016llx", (unsigned long long)core->get_pc_o());
+                exitSimLoop(csprintf("CVA6 program completed successfully at PC: 0x%016llx",
+                                     (unsigned long long)core->get_pc_o()));
                 return;
             }
 
@@ -556,8 +557,8 @@ CVA6RtlCPU::tick()
 
     if (resetDone && core->get_ebreak_o()) {
         stats.numEbreak++;
-        exitSimLoop("CVA6 program hit ebreak instruction at PC: 0x%016llx",
-                    (unsigned long long)core->get_pc_o());
+        exitSimLoop(csprintf("CVA6 program hit ebreak instruction at PC: 0x%016llx",
+                             (unsigned long long)core->get_pc_o()));
         return;
     }
 
