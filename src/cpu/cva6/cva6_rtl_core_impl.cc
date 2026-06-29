@@ -3,6 +3,7 @@
 // Verilated Vcva6_top.
 
 #include "Vcva6_top.h"
+#include "Vcva6_top__Syms.h"
 #include "cva6_rtl_core_interface.hh"
 #include "verilated.h"
 
@@ -127,6 +128,13 @@ class CVA6RtlCoreImpl : public CVA6RtlCoreInterface
     set_hart_id_i(uint64_t val) override
     {
         core->hart_id_i = val;
+    }
+    void
+    set_init_a1_i(uint64_t val) override
+    {
+        auto& regfile = core->rootp->vlSymsp->TOP__cva6_top__i_ariane__i_cva6__issue_stage_i__i_issue_read_operands__gen_asic_regfile__DOT__i_ariane_regfile;
+        regfile.mem[22] = (uint32_t)(val & 0xFFFFFFFF);
+        regfile.mem[23] = (uint32_t)((val >> 32) & 0xFFFFFFFF);
     }
     void
     set_noc_resp_r_data_i(uint64_t val) override

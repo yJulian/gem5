@@ -6,13 +6,14 @@
 #include "base/statistics.hh"
 #include "cpu/cva6/cva6_rtl_core_interface.hh"
 #include "mem/port.hh"
+#include "cpu/base.hh"
+#include "cpu/simple_thread.hh"
 #include "params/CVA6RtlCPU.hh"
-#include "sim/clocked_object.hh"
 
 namespace gem5
 {
 
-class CVA6RtlCPU : public ClockedObject
+class CVA6RtlCPU : public BaseCPU
 {
   private:
     class CpuPort : public RequestPort
@@ -108,6 +109,13 @@ class CVA6RtlCPU : public ClockedObject
     Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
 
     void startup() override;
+
+    // BaseCPU virtual overrides
+    Port &getDataPort() override { return dataPort; }
+    Port &getInstPort() override { return instPort; }
+    void wakeup(ThreadID tid) override {}
+    Counter totalInsts() const override { return cycleCount; }
+    Counter totalOps() const override { return cycleCount; }
 };
 
 } // namespace gem5

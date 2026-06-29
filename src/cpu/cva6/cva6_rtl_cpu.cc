@@ -1,4 +1,7 @@
 #include "cpu/cva6/cva6_rtl_cpu.hh"
+#include "arch/riscv/interrupts.hh"
+#include "arch/riscv/regs/int.hh"
+#include "cpu/simple_thread.hh"
 
 #ifndef DEBUG_CVA
 #define DEBUG_CVA 1
@@ -17,7 +20,7 @@ namespace gem5
 {
 
 CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
-    : ClockedObject(params),
+    : BaseCPU(params),
       instPort(params.name + ".inst_port", this),
       dataPort(params.name + ".data_port", this),
       cycleCount(0),
@@ -82,6 +85,10 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
     core->eval();
 
     requestorId = params.system->getRequestorId(this);
+
+    // Create SimpleThread for the single hardware thread context
+    SimpleThread *thread = new SimpleThread(this, 0, params.system, params.mmu, params.isa[0], params.decoder[0]);
+    threadContexts.push_back(thread->getTC());
 }
 
 CVA6RtlCPU::~CVA6RtlCPU()
@@ -212,7 +219,7 @@ CVA6RtlCPU::getPort(const std::string &if_name, PortID idx)
     } else if (if_name == "data_port") {
         return dataPort;
     } else {
-        return ClockedObject::getPort(if_name, idx);
+        return BaseCPU::getPort(if_name, idx);
     }
 }
 
@@ -245,9 +252,26 @@ CVA6RtlCPU::tick()
         resetDone = true;
     }
 
+    if (cycleCount <= 10) {
+        // Read DTB address from thread context and pass to Verilator's register file
+        uint64_t init_a1 = threadContexts[0]->getReg(RiscvISA::int_reg::A1);
+        std::cout << "[CVA6 CPU DEBUG] Cycle=" << std::dec << cycleCount
+                  << " init_a1=0x" << std::hex << init_a1 << std::endl;
+        core->set_init_a1_i(init_a1);
+    }
+
     // 2. Falling Edge & Setup Inputs
     core->set_clk_i(0);
     if (resetDone) {
+        // Query pending interrupts from the CPU's interrupt controller
+        auto riscv_interrupts = static_cast<RiscvISA::Interrupts*>(interrupts[0]);
+        uint64_t ip = riscv_interrupts->readIP();
+
+        // Drive to verilated RTL model pins
+        core->set_time_irq_i((ip & (1ULL << 7)) != 0); // Machine timer (MTIP)
+        core->set_ipi_i((ip & (1ULL << 3)) != 0);      // Machine software (MSIP)
+        core->set_irq_i((ip & (1ULL << 9)) != 0 || (ip & (1ULL << 11)) != 0); // External (SEIP/MEIP)
+
         // Drive R channel outputs
         if (ar_busy && r_data_ready) {
             core->set_noc_resp_r_valid_i(1);

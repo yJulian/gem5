@@ -35,6 +35,7 @@ class CVA6RtlCoreInterface
     virtual void set_boot_addr_i(uint64_t val) = 0;
     virtual void set_hart_id_i(uint64_t val) = 0;
     virtual void set_noc_resp_r_data_i(uint64_t val) = 0;
+    virtual void set_init_a1_i(uint64_t val) = 0;
 
     // Outputs from core
     virtual uint8_t get_noc_req_w_last_o() = 0;
