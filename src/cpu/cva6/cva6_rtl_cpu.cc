@@ -3,9 +3,9 @@
 #include "arch/riscv/regs/int.hh"
 #include "cpu/simple_thread.hh"
 
-#ifndef DEBUG_CVA
-#define DEBUG_CVA 1
-#endif
+// #ifndef DEBUG_CVA
+// #define DEBUG_CVA 0
+// #endif
 
 #include <dlfcn.h>
 
@@ -15,6 +15,8 @@
 #include "base/logging.hh"
 #include "sim/sim_exit.hh"
 #include "sim/system.hh"
+
+#define DEBUG_CVA 1
 
 namespace gem5
 {
@@ -27,13 +29,13 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
       resetDone(false),
       ar_busy(false),
       r_data_ready(false),
+      read_addr(0),
       aw_received(false),
       write_addr(0),
       write_id(0),
       write_size(0),
       write_len(0),
       w_received_beats(0),
-      write_resp_pending(false),
       tickEvent([this] { tick(); }, name() + ".tick"),
       core(nullptr),
       libHandle(nullptr),
@@ -41,7 +43,7 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
       retryPkt(nullptr),
       retryPort(nullptr),
       pendingWriteResponses(0),
-      writeBurstFinished(false),
+      b_handshake_pending(false),
       stats(this)
 {
     // Load RTL Shared Library using dlopen
@@ -184,9 +186,17 @@ CVA6RtlCPU::handleTimingResp(PacketPtr pkt, CpuPort *port)
         if (pendingWriteResponses > 0) {
             pendingWriteResponses--;
         }
-        if (writeBurstFinished && pendingWriteResponses == 0) {
-            write_resp_pending = true;
-            writeBurstFinished = false;
+        // gem5 write responses arrive in issue order on a single port, so they
+        // retire the beats of the oldest outstanding AXI write first. Once all
+        // beats of that write are acknowledged, queue exactly one B response.
+        if (!writeXacts.empty()) {
+            if (writeXacts.front().second > 0) {
+                writeXacts.front().second--;
+            }
+            if (writeXacts.front().second == 0) {
+                bRespQueue.push_back(writeXacts.front().first);
+                writeXacts.pop_front();
+            }
         }
     }
     delete pkt;
@@ -239,7 +249,8 @@ CVA6RtlCPU::tick()
 #if DEBUG_CVA
     if (cycleCount % 100000 == 0) {
         std::cout << "[CVA6 CPU] Simulated clock cycles: " << std::dec
-                  << cycleCount << std::endl;
+                  << cycleCount << " PC=0x" << std::hex << core->get_pc_o()
+                  << std::dec << std::endl;
     }
 #endif
 
@@ -255,14 +266,23 @@ CVA6RtlCPU::tick()
     if (cycleCount <= 10) {
         // Read DTB address from thread context and pass to Verilator's register file
         uint64_t init_a1 = threadContexts[0]->getReg(RiscvISA::int_reg::A1);
+        if (init_a1 == 0) {
+            init_a1 = 0x87E00000;
+        }
+#if DEBUG_CVA
         std::cout << "[CVA6 CPU DEBUG] Cycle=" << std::dec << cycleCount
                   << " init_a1=0x" << std::hex << init_a1 << std::endl;
+#endif
         core->set_init_a1_i(init_a1);
     }
 
     // 2. Falling Edge & Setup Inputs
     core->set_clk_i(0);
     if (resetDone) {
+        if (b_handshake_pending) {
+            bRespQueue.pop_front();
+            b_handshake_pending = false;
+        }
         // Query pending interrupts from the CPU's interrupt controller
         auto riscv_interrupts = static_cast<RiscvISA::Interrupts*>(interrupts[0]);
         uint64_t ip = riscv_interrupts->readIP();
@@ -281,7 +301,9 @@ CVA6RtlCPU::tick()
             std::memcpy(&data_val,
                         read_data_buffer.data() + read_beat * bytes_per_beat,
                         bytes_per_beat);
-            core->set_noc_resp_r_data_i(data_val);
+            uint64_t addr_beat = read_addr + read_beat * bytes_per_beat;
+            uint32_t shift_bytes = addr_beat % 8;
+            core->set_noc_resp_r_data_i(data_val << (shift_bytes * 8));
             core->set_noc_resp_r_last_i(read_beat == read_len);
             core->set_noc_resp_r_resp_i(0); // OKAY
         } else {
@@ -292,10 +314,10 @@ CVA6RtlCPU::tick()
             core->set_noc_resp_r_resp_i(0);
         }
 
-        // Drive B channel outputs
-        if (write_resp_pending) {
+        // Drive B channel outputs (one response per outstanding AXI write)
+        if (!bRespQueue.empty()) {
             core->set_noc_resp_b_valid_i(1);
-            core->set_noc_resp_b_id_i(write_id);
+            core->set_noc_resp_b_id_i(bRespQueue.front());
             core->set_noc_resp_b_resp_i(0); // OKAY
         } else {
             core->set_noc_resp_b_valid_i(0);
@@ -306,11 +328,9 @@ CVA6RtlCPU::tick()
         // Drive ready inputs
         bool can_accept = !retryPkt;
         core->set_noc_resp_ar_ready_i(!ar_busy && can_accept);
-        core->set_noc_resp_aw_ready_i(!aw_received && !write_resp_pending &&
-                                      can_accept);
+        core->set_noc_resp_aw_ready_i(!aw_received && can_accept);
         core->set_noc_resp_w_ready_i(
-            (aw_received || core->get_noc_req_aw_valid_o()) &&
-            !write_resp_pending && can_accept);
+            (aw_received || core->get_noc_req_aw_valid_o()) && can_accept);
     } else {
         // Inputs during reset
         core->set_noc_resp_r_valid_i(0);
@@ -353,6 +373,7 @@ CVA6RtlCPU::tick()
                 (core->get_noc_req_ar_prot_o() & 0x4) ? instPort : dataPort;
 
             read_id = core->get_noc_req_ar_id_o();
+            read_addr = addr;
             read_len = core->get_noc_req_ar_len_o();
             read_size = core->get_noc_req_ar_size_o();
             read_beat = 0;
@@ -413,25 +434,20 @@ CVA6RtlCPU::tick()
         // C. (Read latency is handled by timing response callback)
 
         // F. Write response (B channel) handshake
-        if (write_resp_pending && core->get_noc_req_b_ready_o()) {
+        if (!bRespQueue.empty() && core->get_noc_req_b_ready_o()) {
             stats.numWriteResps++;
-            write_resp_pending = false;
 #if DEBUG_CVA
             std::cout << "[B Handshake] Cycle=" << std::dec << cycleCount
-                      << " id=0x" << std::hex << write_id << std::dec
-                      << std::endl;
+                      << " id=0x" << std::hex
+                      << (unsigned)bRespQueue.front()
+                      << std::dec << std::endl;
 #endif
-            // Re-drive AW/W ready inputs now that write_resp_pending is false
-            bool can_accept = !retryPkt;
-            core->set_noc_resp_aw_ready_i(!aw_received && can_accept);
-            core->set_noc_resp_w_ready_i(
-                (aw_received || core->get_noc_req_aw_valid_o()) && can_accept);
-            core->eval();
+            b_handshake_pending = true;
         }
 
         // D. Write address (AW channel) handshake
-        bool aw_handshake = !aw_received && !write_resp_pending && !retryPkt &&
-                            core->get_noc_req_aw_valid_o();
+        bool aw_handshake =
+            !aw_received && !retryPkt && core->get_noc_req_aw_valid_o();
         if (aw_handshake) {
             stats.numWriteReqs++;
             uint32_t aw_size = core->get_noc_req_aw_size_o();
@@ -445,6 +461,11 @@ CVA6RtlCPU::tick()
             write_len = core->get_noc_req_aw_len_o();
             w_received_beats = 0;
 
+            // Track this write so it gets exactly one B response once all of
+            // its (write_len + 1) beats are acknowledged by gem5.
+            writeXacts.push_back(
+                std::make_pair((uint8_t)write_id, write_len + 1));
+
 #if DEBUG_CVA
             std::cout << "[AW Handshake] Cycle=" << std::dec << cycleCount
                       << " Addr=0x" << std::hex << write_addr
@@ -455,8 +476,7 @@ CVA6RtlCPU::tick()
         }
 
         // E. Write data (W channel) handshake
-        if (!write_resp_pending && !retryPkt &&
-            (aw_received || core->get_noc_req_aw_valid_o()) &&
+        if (!retryPkt && (aw_received || core->get_noc_req_aw_valid_o()) &&
             core->get_noc_req_w_valid_o()) {
 
             stats.numWriteBeats++;
@@ -470,7 +490,8 @@ CVA6RtlCPU::tick()
 
             // Check exit command
             if (addr == 0x80001000 && data_val != 0) {
-                exitSimLoop("CVA6 program completed successfully");
+                exitSimLoop("CVA6 program completed successfully at PC:
+                     0x%016llx", (unsigned long long)core->get_pc_o());
                 return;
             }
 
@@ -483,7 +504,10 @@ CVA6RtlCPU::tick()
                                                        flags, requestorId);
             PacketPtr pkt = Packet::createWrite(req);
             pkt->allocate();
-            std::memcpy(pkt->getPtr<uint8_t>(), &data_val, bytes_per_beat);
+            uint32_t shift_bytes = addr % 8;
+            uint64_t data_to_write = data_val >> (shift_bytes * 8);
+            std::memcpy(pkt->getPtr<uint8_t>(), &data_to_write,
+                        bytes_per_beat);
 
             pendingWriteResponses++;
 
@@ -508,17 +532,13 @@ CVA6RtlCPU::tick()
 
             w_received_beats++;
 
-            // Did we just finish the write burst?
+            // Did we just finish the write burst? Release the W datapath so
+            // the next AW can be accepted; the B response for this write is
+            // emitted independently once gem5 acknowledges all of its beats.
             if (w_received_beats == current_len + 1 ||
                 core->get_noc_req_w_last_o()) {
-                writeBurstFinished = true;
                 aw_received = false;
                 w_received_beats = 0;
-
-                if (pendingWriteResponses == 0) {
-                    write_resp_pending = true;
-                    writeBurstFinished = false;
-                }
             }
         }
     }
@@ -536,7 +556,8 @@ CVA6RtlCPU::tick()
 
     if (resetDone && core->get_ebreak_o()) {
         stats.numEbreak++;
-        exitSimLoop("CVA6 program hit ebreak instruction");
+        exitSimLoop("CVA6 program hit ebreak instruction at PC: 0x%016llx",
+                    (unsigned long long)core->get_pc_o());
         return;
     }
 

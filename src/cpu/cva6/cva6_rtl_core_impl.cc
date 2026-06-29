@@ -233,10 +233,18 @@ class CVA6RtlCoreImpl : public CVA6RtlCoreInterface
     {
         return core->illegal_instr_o;
     }
+    [[deprecated]]
     uint64_t
     get_illegal_instr_pc_o() override
     {
-        return core->illegal_instr_pc_o;
+        return core->program_counter;
+    }
+    uint64_t
+    get_pc_o() override
+    {
+        //return core->rootp->vlSymsp->
+        // TOP__cva6_top__i_ariane__i_cva6__i_frontend.npc_q;
+        return core->program_counter;
     }
 
     // Control

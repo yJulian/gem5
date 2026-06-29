@@ -1,6 +1,9 @@
 #ifndef __CPU_CVA6_CVA6_RTL_CPU_HH__
 #define __CPU_CVA6_CVA6_RTL_CPU_HH__
 
+#include <cstdint>
+#include <deque>
+#include <utility>
 #include <vector>
 
 #include "base/statistics.hh"
@@ -42,6 +45,7 @@ class CVA6RtlCPU : public BaseCPU
     // AXI state buffers for co-simulation
     bool ar_busy;
     bool r_data_ready;
+    uint64_t read_addr;
     uint32_t read_id;
     uint32_t read_len;
     uint32_t read_size;
@@ -54,7 +58,16 @@ class CVA6RtlCPU : public BaseCPU
     uint32_t write_size;
     uint32_t write_len;
     uint32_t w_received_beats;
-    bool write_resp_pending;
+
+    // Outstanding AXI write transactions, in issue order. Each entry holds the
+    // AXI write id and the number of per-beat gem5 write responses still
+    // expected for that transaction. CVA6 requires exactly one B response per
+    // AW, so we must track every outstanding write individually rather than
+    // collapsing them into a single pending flag.
+    std::deque<std::pair<uint8_t, uint32_t>> writeXacts;
+    // Ids of fully-acknowledged writes waiting for a B handshake to the core.
+    std::deque<uint8_t> bRespQueue;
+    bool b_handshake_pending;
 
     void tick();
     EventFunctionWrapper tickEvent;
@@ -67,7 +80,6 @@ class CVA6RtlCPU : public BaseCPU
     PacketPtr retryPkt;
     CpuPort *retryPort;
     uint32_t pendingWriteResponses;
-    bool writeBurstFinished;
 
     struct CPUStats : public statistics::Group
     {

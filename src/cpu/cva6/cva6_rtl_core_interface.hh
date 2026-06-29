@@ -57,6 +57,7 @@ class CVA6RtlCoreInterface
     virtual uint8_t get_ebreak_o() = 0;
     virtual uint8_t get_illegal_instr_o() = 0;
     virtual uint64_t get_illegal_instr_pc_o() = 0;
+    virtual uint64_t get_pc_o() = 0;
 
     // Control
     virtual void eval() = 0;
