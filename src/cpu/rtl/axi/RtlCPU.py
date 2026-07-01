@@ -1,15 +1,15 @@
 # Copyright 2026 Antigravity
-# Description: Python declaration for CVA6RtlCPU SimObject.
+# Description: Python declaration for RtlCPU SimObject.
 
 from m5.objects.BaseCPU import BaseCPU
 from m5.params import *
 from m5.proxy import *
 
 
-class CVA6RtlCPU(BaseCPU):
-    type = "CVA6RtlCPU"
-    cxx_header = "cpu/rtl/axi/cva6/cva6_rtl_cpu.hh"
-    cxx_class = "gem5::CVA6RtlCPU"
+class RtlCPU(BaseCPU):
+    type = "RtlCPU"
+    cxx_header = "cpu/rtl/axi/rtl_cpu.hh"
+    cxx_class = "gem5::RtlCPU"
 
     # Define architecture-specific classes required by BaseCPU
     from m5.objects.RiscvDecoder import RiscvDecoder
@@ -25,11 +25,11 @@ class CVA6RtlCPU(BaseCPU):
     inst_port = RequestPort("Instruction request port to memory")
     data_port = RequestPort("Data request port to memory")
 
-    trace_enable = Param.Bool(False, "Enable VCD tracing of CVA6 RTL signals")
-    trace_file = Param.String("cva6_trace.vcd", "VCD trace filename")
+    trace_enable = Param.Bool(False, "Enable VCD tracing of RTL signals")
+    trace_file = Param.String("rtl_trace.vcd", "VCD trace filename")
     rtl_library = Param.String(
-        "cva_verilate/work-ver-core/libVcva6_top.so",
-        "Path to the Verilator CVA6 shared library",
+        "cva_verilate/libVcva6_top.so",
+        "Path to the RTL shared library",
     )
 
     def __init__(self, **kwargs):

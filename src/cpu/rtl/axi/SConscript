@@ -1,0 +1,7 @@
+# Copyright 2026 Antigravity
+# Description: SConscript for RtlCPU.
+
+Import('*')
+
+SimObject('RtlCPU.py', sim_objects=['RtlCPU'])
+Source('rtl_cpu.cc')

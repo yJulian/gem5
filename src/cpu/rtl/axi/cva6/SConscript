@@ -1,7 +1,0 @@
-# Copyright 2026 Antigravity
-# Description: SConscript for CVA6RtlCPU.
-
-Import('*')
-
-SimObject('CVA6RtlCPU.py', sim_objects=['CVA6RtlCPU'])
-Source('cva6_rtl_cpu.cc')

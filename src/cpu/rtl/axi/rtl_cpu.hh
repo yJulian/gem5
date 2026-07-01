@@ -1,33 +1,36 @@
-#ifndef __CPU_RTL_AXI_CVA6_CVA6_RTL_CPU_HH__
-#define __CPU_RTL_AXI_CVA6_CVA6_RTL_CPU_HH__
+// Copyright 2026 Antigravity
+// Description: Core-agnostic CPU SimObject for RTL co-simulation.
+
+#ifndef __CPU_RTL_AXI_RTL_CPU_HH__
+#define __CPU_RTL_AXI_RTL_CPU_HH__
 
 #include <cstdint>
 #include <deque>
 #include <utility>
 #include <vector>
-
 #include <memory>
+
 #include "base/statistics.hh"
 #include "cpu/base.hh"
-#include "cpu/rtl/axi/cva6/cva6_rtl_core_interface.hh"
+#include "cpu/rtl/axi/rtl_core_interface.hh"
 #include "cpu/rtl/mem_iface_base.hh"
 #include "cpu/simple_thread.hh"
 #include "mem/port.hh"
-#include "params/CVA6RtlCPU.hh"
+#include "params/RtlCPU.hh"
 
 namespace gem5
 {
 
-class CVA6RtlCPU : public BaseCPU, public RtlCpuHelper
+class RtlCPU : public BaseCPU, public RtlCpuHelper
 {
   private:
     class CpuPort : public RequestPort
     {
       private:
-        CVA6RtlCPU *cpu;
+        RtlCPU *cpu;
 
       public:
-        CpuPort(const std::string &name, CVA6RtlCPU *cpu)
+        CpuPort(const std::string &name, RtlCPU *cpu)
             : RequestPort(name), cpu(cpu)
         {}
 
@@ -39,7 +42,7 @@ class CVA6RtlCPU : public BaseCPU, public RtlCpuHelper
     CpuPort instPort;
     CpuPort dataPort;
 
-    CVA6RtlCoreInterface *core;
+    RtlCoreInterface *core;
     void *libHandle;
     destroy_core_t destroyCorePointer;
 
@@ -94,8 +97,8 @@ class CVA6RtlCPU : public BaseCPU, public RtlCpuHelper
     } stats;
 
   public:
-    CVA6RtlCPU(const CVA6RtlCPUParams &params);
-    ~CVA6RtlCPU();
+    RtlCPU(const RtlCPUParams &params);
+    ~RtlCPU();
 
     Port &getPort(const std::string &if_name,
                   PortID idx = InvalidPortID) override;
@@ -160,4 +163,4 @@ class CVA6RtlCPU : public BaseCPU, public RtlCpuHelper
 
 } // namespace gem5
 
-#endif // __CPU_CVA6_CVA6_RTL_CPU_HH__
+#endif // __CPU_RTL_AXI_RTL_CPU_HH__

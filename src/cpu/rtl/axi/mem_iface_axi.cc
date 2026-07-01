@@ -8,8 +8,9 @@
 namespace gem5
 {
 
-RtlMemIfaceAxi::RtlMemIfaceAxi(RtlCpuHelper *_helper)
+RtlMemIfaceAxi::RtlMemIfaceAxi(RtlCpuHelper *_helper, RtlCoreInterface *_core)
     : RtlMemIfaceBase(_helper),
+      core(_core),
       ar_busy(false),
       r_data_ready(false),
       read_addr(0),
@@ -40,8 +41,8 @@ RtlMemIfaceAxi::driveInputs()
 
         // Drive R channel outputs
         if (ar_busy && r_data_ready) {
-            set_noc_resp_r_valid_i(1);
-            set_noc_resp_r_id_i(read_id);
+            core->set_r_valid(1);
+            core->set_r_id(read_id);
             uint32_t bytes_per_beat = 1 << read_size;
             uint64_t data_val = 0;
             std::memcpy(&data_val,
@@ -49,47 +50,47 @@ RtlMemIfaceAxi::driveInputs()
                         bytes_per_beat);
             uint64_t addr_beat = read_addr + read_beat * bytes_per_beat;
             uint32_t shift_bytes = addr_beat % 8;
-            set_noc_resp_r_data_i(data_val << (shift_bytes * 8));
-            set_noc_resp_r_last_i(read_beat == read_len);
-            set_noc_resp_r_resp_i(0); // OKAY
+            core->set_r_data(data_val << (shift_bytes * 8));
+            core->set_r_last(read_beat == read_len);
+            core->set_r_resp(0); // OKAY
         } else {
-            set_noc_resp_r_valid_i(0);
-            set_noc_resp_r_last_i(0);
-            set_noc_resp_r_data_i(0);
-            set_noc_resp_r_id_i(0);
-            set_noc_resp_r_resp_i(0);
+            core->set_r_valid(0);
+            core->set_r_last(0);
+            core->set_r_data(0);
+            core->set_r_id(0);
+            core->set_r_resp(0);
         }
 
         // Drive B channel outputs
         if (!bRespQueue.empty()) {
-            set_noc_resp_b_valid_i(1);
-            set_noc_resp_b_id_i(bRespQueue.front());
-            set_noc_resp_b_resp_i(0); // OKAY
+            core->set_b_valid(1);
+            core->set_b_id(bRespQueue.front());
+            core->set_b_resp(0); // OKAY
         } else {
-            set_noc_resp_b_valid_i(0);
-            set_noc_resp_b_id_i(0);
-            set_noc_resp_b_resp_i(0);
+            core->set_b_valid(0);
+            core->set_b_id(0);
+            core->set_b_resp(0);
         }
 
         // Drive ready inputs
         bool can_accept = !helper->isRetryPending();
-        set_noc_resp_ar_ready_i(!ar_busy && can_accept);
-        set_noc_resp_aw_ready_i(!aw_received && can_accept);
-        set_noc_resp_w_ready_i(
-            (aw_received || get_noc_req_aw_valid_o()) && can_accept);
+        core->set_ar_ready(!ar_busy && can_accept);
+        core->set_aw_ready(!aw_received && can_accept);
+        core->set_w_ready(
+            (aw_received || core->get_aw_valid()) && can_accept);
     } else {
         // Inputs during reset
-        set_noc_resp_r_valid_i(0);
-        set_noc_resp_r_last_i(0);
-        set_noc_resp_r_data_i(0);
-        set_noc_resp_r_id_i(0);
-        set_noc_resp_r_resp_i(0);
-        set_noc_resp_b_valid_i(0);
-        set_noc_resp_b_id_i(0);
-        set_noc_resp_b_resp_i(0);
-        set_noc_resp_ar_ready_i(0);
-        set_noc_resp_aw_ready_i(0);
-        set_noc_resp_w_ready_i(0);
+        core->set_r_valid(0);
+        core->set_r_last(0);
+        core->set_r_data(0);
+        core->set_r_id(0);
+        core->set_r_resp(0);
+        core->set_b_valid(0);
+        core->set_b_id(0);
+        core->set_b_resp(0);
+        core->set_ar_ready(0);
+        core->set_aw_ready(0);
+        core->set_w_ready(0);
     }
 }
 
@@ -101,11 +102,11 @@ RtlMemIfaceAxi::sampleOutputs()
     }
 
     // A. Read address (AR channel) handshake
-    if (!ar_busy && !helper->isRetryPending() && get_noc_req_ar_valid_o()) {
-        uint64_t addr = get_noc_req_ar_addr_o();
-        uint32_t bytes_per_beat = 1 << get_noc_req_ar_size_o();
+    if (!ar_busy && !helper->isRetryPending() && core->get_ar_valid()) {
+        uint64_t addr = core->get_ar_addr();
+        uint32_t bytes_per_beat = 1 << core->get_ar_size();
         uint32_t total_bytes =
-            bytes_per_beat * (get_noc_req_ar_len_o() + 1);
+            bytes_per_beat * (core->get_ar_len() + 1);
 
         Request::Flags flags = 0;
         if (addr < 0x80000000) {
@@ -116,12 +117,12 @@ RtlMemIfaceAxi::sampleOutputs()
         PacketPtr pkt = Packet::createRead(req);
         pkt->allocate();
 
-        bool is_inst = (get_noc_req_ar_prot_o() & 0x4) != 0;
+        bool is_inst = (core->get_ar_prot() & 0x4) != 0;
 
-        read_id = get_noc_req_ar_id_o();
+        read_id = core->get_ar_id();
         read_addr = addr;
-        read_len = get_noc_req_ar_len_o();
-        read_size = get_noc_req_ar_size_o();
+        read_len = core->get_ar_len();
+        read_size = core->get_ar_size();
         read_beat = 0;
         ar_busy = true;
         r_data_ready = false;
@@ -132,7 +133,7 @@ RtlMemIfaceAxi::sampleOutputs()
     }
 
     // B. Read response (R channel) handshake
-    if (ar_busy && r_data_ready && get_noc_req_r_ready_o()) {
+    if (ar_busy && r_data_ready && core->get_r_ready()) {
         helper->recordReadBeat();
 
         if (read_beat == read_len) {
@@ -144,21 +145,21 @@ RtlMemIfaceAxi::sampleOutputs()
     }
 
     // F. Write response (B channel) handshake
-    if (!bRespQueue.empty() && get_noc_req_b_ready_o()) {
+    if (!bRespQueue.empty() && core->get_b_ready()) {
         helper->recordWriteResp();
         b_handshake_pending = true;
     }
 
     // D. Write address (AW channel) handshake
     bool aw_handshake =
-        !aw_received && !helper->isRetryPending() && get_noc_req_aw_valid_o();
+        !aw_received && !helper->isRetryPending() && core->get_aw_valid();
     if (aw_handshake) {
-        helper->recordWriteReq(get_noc_req_aw_size_o());
+        helper->recordWriteReq(core->get_aw_size());
         aw_received = true;
-        write_addr = get_noc_req_aw_addr_o();
-        write_id = get_noc_req_aw_id_o();
-        write_size = get_noc_req_aw_size_o();
-        write_len = get_noc_req_aw_len_o();
+        write_addr = core->get_aw_addr();
+        write_id = core->get_aw_id();
+        write_size = core->get_aw_size();
+        write_len = core->get_aw_len();
         w_received_beats = 0;
 
         writeXacts.push_back(
@@ -166,40 +167,19 @@ RtlMemIfaceAxi::sampleOutputs()
     }
 
     // E. Write data (W channel) handshake
-    if (!helper->isRetryPending() && (aw_received || get_noc_req_aw_valid_o()) &&
-        get_noc_req_w_valid_o()) {
+    if (!helper->isRetryPending() && (aw_received || core->get_aw_valid()) &&
+        core->get_w_valid()) {
 
         helper->recordWriteBeat();
         uint32_t current_size =
-            aw_received ? write_size : get_noc_req_aw_size_o();
+            aw_received ? write_size : core->get_aw_size();
         uint32_t bytes_per_beat = 1 << current_size;
         uint64_t addr =
-            (aw_received ? write_addr : get_noc_req_aw_addr_o()) +
+            (aw_received ? write_addr : core->get_aw_addr()) +
             w_received_beats * bytes_per_beat;
-        uint64_t data_val = get_noc_req_w_data_o();
+        uint64_t data_val = core->get_w_data();
 
-        // Detect tohost write (HTIF exit protocol).
-        // The CVA6 pipeline can commit `sd tohost` and `ebreak` in the same
-        // RTL evaluation tick. A timing write (sendTimingReq) has a 10ns async
-        // latency, so physProxy.read() would return 0 if ebreak fires first.
-        // Fix: use writePhysMem (functional/synchronous) to commit tohost to
-        // physical memory immediately, then schedule the exit. This guarantees
-        // physProxy.read(0x80001000) returns the correct value regardless of
-        // when the ebreak exit event fires.
-        //if (addr == 0x80001000 && data_val != 0) {
-        //    uint32_t shift_bytes = addr % 8;
-        //    uint64_t data_to_write = data_val >> (shift_bytes * 8);
-        //    helper->writePhysMem(addr,
-        //                         reinterpret_cast<const uint8_t*>(&data_to_write),
-        //                         bytes_per_beat);
-        //    helper->exitSimulation(csprintf(
-        //        "CVA6 program completed with tohost=0x%llx at PC: 0x%016llx",
-        //        (unsigned long long)data_val,
-        //        (unsigned long long)get_pc_o()));
-        //    return;
-        //}
-
-        // Perform timing write (non-tohost addresses)
+        // Perform timing write
         Request::Flags flags = 0;
         if (addr < 0x80000000) {
             flags.set(Request::UNCACHEABLE);
@@ -216,12 +196,12 @@ RtlMemIfaceAxi::sampleOutputs()
         helper->sendTimingReq(pkt, false);
 
         uint32_t current_len =
-            aw_received ? write_len : get_noc_req_aw_len_o();
+            aw_received ? write_len : core->get_aw_len();
 
         w_received_beats++;
 
         if (w_received_beats == current_len + 1 ||
-            get_noc_req_w_last_o()) {
+            core->get_w_last()) {
             aw_received = false;
             w_received_beats = 0;
         }

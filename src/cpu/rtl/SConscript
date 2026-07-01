@@ -4,5 +4,4 @@
 Import('*')
 
 Source('axi/mem_iface_axi.cc')
-Source('axi/cva6/cva6_mem_iface_axi.cc')
 Source('sram/mem_iface_sram.cc')
