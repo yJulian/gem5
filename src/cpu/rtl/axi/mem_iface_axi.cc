@@ -76,8 +76,7 @@ RtlMemIfaceAxi::driveInputs()
         bool can_accept = !helper->isRetryPending();
         core->set_ar_ready(!ar_busy && can_accept);
         core->set_aw_ready(!aw_received && can_accept);
-        core->set_w_ready(
-            (aw_received || core->get_aw_valid()) && can_accept);
+        core->set_w_ready((aw_received || core->get_aw_valid()) && can_accept);
     } else {
         // Inputs during reset
         core->set_r_valid(0);
@@ -105,8 +104,7 @@ RtlMemIfaceAxi::sampleOutputs()
     if (!ar_busy && !helper->isRetryPending() && core->get_ar_valid()) {
         uint64_t addr = core->get_ar_addr();
         uint32_t bytes_per_beat = 1 << core->get_ar_size();
-        uint32_t total_bytes =
-            bytes_per_beat * (core->get_ar_len() + 1);
+        uint32_t total_bytes = bytes_per_beat * (core->get_ar_len() + 1);
 
         Request::Flags flags = 0;
         if (addr < 0x80000000) {
@@ -171,12 +169,10 @@ RtlMemIfaceAxi::sampleOutputs()
         core->get_w_valid()) {
 
         helper->recordWriteBeat();
-        uint32_t current_size =
-            aw_received ? write_size : core->get_aw_size();
+        uint32_t current_size = aw_received ? write_size : core->get_aw_size();
         uint32_t bytes_per_beat = 1 << current_size;
-        uint64_t addr =
-            (aw_received ? write_addr : core->get_aw_addr()) +
-            w_received_beats * bytes_per_beat;
+        uint64_t addr = (aw_received ? write_addr : core->get_aw_addr()) +
+                        w_received_beats * bytes_per_beat;
         uint64_t data_val = core->get_w_data();
 
         // Perform timing write
@@ -195,13 +191,11 @@ RtlMemIfaceAxi::sampleOutputs()
 
         helper->sendTimingReq(pkt, false);
 
-        uint32_t current_len =
-            aw_received ? write_len : core->get_aw_len();
+        uint32_t current_len = aw_received ? write_len : core->get_aw_len();
 
         w_received_beats++;
 
-        if (w_received_beats == current_len + 1 ||
-            core->get_w_last()) {
+        if (w_received_beats == current_len + 1 || core->get_w_last()) {
             aw_received = false;
             w_received_beats = 0;
         }

@@ -1,5 +1,6 @@
 // Copyright 2026 Antigravity
-// Description: Core-agnostic CPU SimObject implementation for RTL co-simulation.
+// Description: Core-agnostic CPU SimObject implementation for RTL
+// co-simulation.
 
 #include "cpu/rtl/axi/rtl_cpu.hh"
 #include "arch/riscv/interrupts.hh"
@@ -8,8 +9,8 @@
 #include "cpu/simple_thread.hh"
 #include "mem/port_proxy.hh"
 
-#include <dlfcn.h>
 #include <cstring>
+#include <dlfcn.h>
 #include <iostream>
 
 #include "base/logging.hh"
@@ -263,7 +264,7 @@ RtlCPU::tick()
 
         // Drive to verilated RTL model pins
         core->set_time_irq((ip & (1ULL << 7)) != 0); // Machine timer (MTIP)
-        core->set_ipi((ip & (1ULL << 3)) != 0); // Machine software (MSIP)
+        core->set_ipi((ip & (1ULL << 3)) != 0);      // Machine software (MSIP)
         core->set_irq((ip & (1ULL << 9)) != 0 ||
                       (ip & (1ULL << 11)) != 0); // External (SEIP/MEIP)
 

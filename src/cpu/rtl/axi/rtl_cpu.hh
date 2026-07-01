@@ -6,9 +6,9 @@
 
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <utility>
 #include <vector>
-#include <memory>
 
 #include "base/statistics.hh"
 #include "cpu/base.hh"
