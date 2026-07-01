@@ -132,7 +132,9 @@ class CVA6RtlCoreImpl : public CVA6RtlCoreInterface
     void
     set_init_a1_i(uint64_t val) override
     {
-        auto& regfile = core->rootp->vlSymsp->TOP__cva6_top__i_ariane__i_cva6__issue_stage_i__i_issue_read_operands__gen_asic_regfile__DOT__i_ariane_regfile;
+        auto &regfile =
+            core->rootp->vlSymsp
+                ->TOP__cva6_top__i_ariane__i_cva6__issue_stage_i__i_issue_read_operands__gen_asic_regfile__DOT__i_ariane_regfile;
         regfile.mem[22] = (uint32_t)(val & 0xFFFFFFFF);
         regfile.mem[23] = (uint32_t)((val >> 32) & 0xFFFFFFFF);
     }
@@ -242,8 +244,8 @@ class CVA6RtlCoreImpl : public CVA6RtlCoreInterface
     uint64_t
     get_pc_o() override
     {
-        //return core->rootp->vlSymsp->
-        // TOP__cva6_top__i_ariane__i_cva6__i_frontend.npc_q;
+        // return core->rootp->vlSymsp->
+        //  TOP__cva6_top__i_ariane__i_cva6__i_frontend.npc_q;
         return core->program_counter;
     }
 

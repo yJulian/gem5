@@ -1,8 +1,8 @@
 // Copyright 2026 Antigravity
 // Description: Abstract interface for the CVA6 RTL Verilated core.
 
-#ifndef __CPU_CVA6_CVA6_RTL_CORE_INTERFACE_HH__
-#define __CPU_CVA6_CVA6_RTL_CORE_INTERFACE_HH__
+#ifndef __CPU_RTL_AXI_CVA6_CVA6_RTL_CORE_INTERFACE_HH__
+#define __CPU_RTL_AXI_CVA6_CVA6_RTL_CORE_INTERFACE_HH__
 
 #include <cstdint>
 #include <string>

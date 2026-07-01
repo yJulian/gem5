@@ -4,8 +4,8 @@
 #ifndef __CPU_RTL_AXI_CVA6_CVA6_MEM_IFACE_AXI_HH__
 #define __CPU_RTL_AXI_CVA6_CVA6_MEM_IFACE_AXI_HH__
 
+#include "cpu/rtl/axi/cva6/cva6_rtl_core_interface.hh"
 #include "cpu/rtl/axi/mem_iface_axi.hh"
-#include "cpu/cva6/cva6_rtl_core_interface.hh"
 
 namespace gem5
 {

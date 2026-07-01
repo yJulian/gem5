@@ -1,8 +1,8 @@
-#include "cpu/cva6/cva6_rtl_cpu.hh"
+#include "cpu/rtl/axi/cva6/cva6_rtl_cpu.hh"
 #include "arch/riscv/interrupts.hh"
 #include "arch/riscv/regs/int.hh"
-#include "cpu/simple_thread.hh"
 #include "cpu/rtl/axi/cva6/cva6_mem_iface_axi.hh"
+#include "cpu/simple_thread.hh"
 #include "mem/port_proxy.hh"
 
 // #ifndef DEBUG_CVA
@@ -84,7 +84,8 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
     requestorId = params.system->getRequestorId(this);
 
     // Create SimpleThread for the single hardware thread context
-    SimpleThread *thread = new SimpleThread(this, 0, params.system, params.mmu, params.isa[0], params.decoder[0]);
+    SimpleThread *thread = new SimpleThread(this, 0, params.system, params.mmu,
+                                            params.isa[0], params.decoder[0]);
     threadContexts.push_back(thread->getTC());
 }
 
@@ -241,7 +242,8 @@ CVA6RtlCPU::tick()
     }
 
     if (cycleCount <= 10) {
-        // Read DTB address from thread context and pass to Verilator's register file
+        // Read DTB address from thread context and pass to Verilator's
+        // register file
         uint64_t init_a1 = threadContexts[0]->getReg(RiscvISA::int_reg::A1);
         if (init_a1 == 0) {
             init_a1 = 0x87E00000;
@@ -257,13 +259,15 @@ CVA6RtlCPU::tick()
     core->set_clk_i(0);
     if (resetDone) {
         // Query pending interrupts from the CPU's interrupt controller
-        auto riscv_interrupts = static_cast<RiscvISA::Interrupts*>(interrupts[0]);
+        auto riscv_interrupts =
+            static_cast<RiscvISA::Interrupts *>(interrupts[0]);
         uint64_t ip = riscv_interrupts->readIP();
 
         // Drive to verilated RTL model pins
         core->set_time_irq_i((ip & (1ULL << 7)) != 0); // Machine timer (MTIP)
-        core->set_ipi_i((ip & (1ULL << 3)) != 0);      // Machine software (MSIP)
-        core->set_irq_i((ip & (1ULL << 9)) != 0 || (ip & (1ULL << 11)) != 0); // External (SEIP/MEIP)
+        core->set_ipi_i((ip & (1ULL << 3)) != 0); // Machine software (MSIP)
+        core->set_irq_i((ip & (1ULL << 9)) != 0 ||
+                        (ip & (1ULL << 11)) != 0); // External (SEIP/MEIP)
 
         // Drive memory interface inputs
         memIface->driveInputs();
@@ -291,8 +295,9 @@ CVA6RtlCPU::tick()
 
     if (resetDone && core->get_ebreak_o()) {
         stats.numEbreak++;
-        exitSimLoop(csprintf("CVA6 program hit ebreak instruction at PC: 0x%016llx",
-                             (unsigned long long)core->get_pc_o()));
+        exitSimLoop(
+            csprintf("CVA6 program hit ebreak instruction at PC: 0x%016llx",
+                     (unsigned long long)core->get_pc_o()));
         return;
     }
 

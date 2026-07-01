@@ -8,7 +8,7 @@ from m5.proxy import *
 
 class FifoAccelerator(DmaDevice):
     type = "FifoAccelerator"
-    cxx_header = "cpu/cva6/fifo_accel.hh"
+    cxx_header = "test_objects/fifo/fifo_accel.hh"
     cxx_class = "gem5::FifoAccelerator"
 
     pio_addr = Param.Addr("Address of MMIO registers")

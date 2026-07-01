@@ -1,7 +1,7 @@
 // Copyright 2026 Antigravity
 // Description: C++ implementation for FifoAccelerator gem5 SimObject.
 
-#include "cpu/cva6/fifo_accel.hh"
+#include "test_objects/fifo/fifo_accel.hh"
 
 #include <dlfcn.h>
 

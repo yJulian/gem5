@@ -1,8 +1,8 @@
 // Copyright 2026 Antigravity
 // Description: Abstract interface for the Verilated FIFO Accelerator.
 
-#ifndef __CPU_CVA6_FIFO_ACCEL_INTERFACE_HH__
-#define __CPU_CVA6_FIFO_ACCEL_INTERFACE_HH__
+#ifndef __TEST_OBJECTS_FIFO_FIFO_ACCEL_INTERFACE_HH__
+#define __TEST_OBJECTS_FIFO_FIFO_ACCEL_INTERFACE_HH__
 
 #include <cstdint>
 #include <string>

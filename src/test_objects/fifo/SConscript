@@ -1,0 +1,7 @@
+# Copyright 2026 Antigravity
+# Description: SConscript for FifoAccelerator.
+
+Import('*')
+
+SimObject('FifoAccelerator.py', sim_objects=['FifoAccelerator'])
+Source('fifo_accel.cc')

@@ -1,5 +1,5 @@
-#ifndef __CPU_CVA6_CVA6_RTL_CPU_HH__
-#define __CPU_CVA6_CVA6_RTL_CPU_HH__
+#ifndef __CPU_RTL_AXI_CVA6_CVA6_RTL_CPU_HH__
+#define __CPU_RTL_AXI_CVA6_CVA6_RTL_CPU_HH__
 
 #include <cstdint>
 #include <deque>
@@ -8,12 +8,12 @@
 
 #include <memory>
 #include "base/statistics.hh"
-#include "cpu/cva6/cva6_rtl_core_interface.hh"
-#include "mem/port.hh"
 #include "cpu/base.hh"
-#include "cpu/simple_thread.hh"
-#include "params/CVA6RtlCPU.hh"
+#include "cpu/rtl/axi/cva6/cva6_rtl_core_interface.hh"
 #include "cpu/rtl/mem_iface_base.hh"
+#include "cpu/simple_thread.hh"
+#include "mem/port.hh"
+#include "params/CVA6RtlCPU.hh"
 
 namespace gem5
 {
@@ -25,10 +25,12 @@ class CVA6RtlCPU : public BaseCPU, public RtlCpuHelper
     {
       private:
         CVA6RtlCPU *cpu;
+
       public:
-        CpuPort(const std::string& name, CVA6RtlCPU *cpu) :
-            RequestPort(name), cpu(cpu)
-        { }
+        CpuPort(const std::string &name, CVA6RtlCPU *cpu)
+            : RequestPort(name), cpu(cpu)
+        {}
+
       protected:
         bool recvTimingResp(PacketPtr pkt) override;
         void recvReqRetry() override;
@@ -57,7 +59,6 @@ class CVA6RtlCPU : public BaseCPU, public RtlCpuHelper
     PacketPtr retryPkt;
     CpuPort *retryPort;
     uint32_t pendingWriteResponses;
-
 
     struct CPUStats : public statistics::Group
     {
@@ -96,29 +97,64 @@ class CVA6RtlCPU : public BaseCPU, public RtlCpuHelper
     CVA6RtlCPU(const CVA6RtlCPUParams &params);
     ~CVA6RtlCPU();
 
-    Port &getPort(const std::string &if_name, PortID idx = InvalidPortID) override;
+    Port &getPort(const std::string &if_name,
+                  PortID idx = InvalidPortID) override;
 
     void startup() override;
 
     // BaseCPU virtual overrides
-    Port &getDataPort() override { return dataPort; }
-    Port &getInstPort() override { return instPort; }
-    void wakeup(ThreadID tid) override {}
-    Counter totalInsts() const override { return cycleCount; }
-    Counter totalOps() const override { return cycleCount; }
+    Port &
+    getDataPort() override
+    {
+        return dataPort;
+    }
+    Port &
+    getInstPort() override
+    {
+        return instPort;
+    }
+    void
+    wakeup(ThreadID tid) override
+    {}
+    Counter
+    totalInsts() const override
+    {
+        return cycleCount;
+    }
+    Counter
+    totalOps() const override
+    {
+        return cycleCount;
+    }
 
     // RtlCpuHelper virtual overrides
     bool sendTimingReq(PacketPtr pkt, bool is_inst) override;
-    RequestorID getRequestorId() const override { return requestorId; }
+    RequestorID
+    getRequestorId() const override
+    {
+        return requestorId;
+    }
     void recordReadReq(bool is_inst, uint32_t size) override;
     void recordWriteReq(uint32_t size) override;
     void recordReadBeat() override;
     void recordWriteBeat() override;
     void recordWriteResp() override;
     void exitSimulation(const std::string &reason) override;
-    bool isResetDone() const override { return resetDone; }
-    uint64_t getCycleCount() const override { return cycleCount; }
-    bool isRetryPending() const override { return retryPkt != nullptr; }
+    bool
+    isResetDone() const override
+    {
+        return resetDone;
+    }
+    uint64_t
+    getCycleCount() const override
+    {
+        return cycleCount;
+    }
+    bool
+    isRetryPending() const override
+    {
+        return retryPkt != nullptr;
+    }
     void writePhysMem(Addr addr, const uint8_t *data, size_t size) override;
 };
 

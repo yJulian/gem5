@@ -8,7 +8,7 @@ from m5.proxy import *
 
 class CVA6RtlCPU(BaseCPU):
     type = "CVA6RtlCPU"
-    cxx_header = "cpu/cva6/cva6_rtl_cpu.hh"
+    cxx_header = "cpu/rtl/axi/cva6/cva6_rtl_cpu.hh"
     cxx_class = "gem5::CVA6RtlCPU"
 
     # Define architecture-specific classes required by BaseCPU
