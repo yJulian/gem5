@@ -2,6 +2,8 @@
 #include "arch/riscv/interrupts.hh"
 #include "arch/riscv/regs/int.hh"
 #include "cpu/simple_thread.hh"
+#include "cpu/rtl/axi/cva6/cva6_mem_iface_axi.hh"
+#include "mem/port_proxy.hh"
 
 // #ifndef DEBUG_CVA
 // #define DEBUG_CVA 0
@@ -28,15 +30,6 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
       dataPort(params.name + ".data_port", this),
       cycleCount(0),
       resetDone(false),
-      ar_busy(false),
-      r_data_ready(false),
-      read_addr(0),
-      aw_received(false),
-      write_addr(0),
-      write_id(0),
-      write_size(0),
-      write_len(0),
-      w_received_beats(0),
       tickEvent([this] { tick(); }, name() + ".tick"),
       core(nullptr),
       libHandle(nullptr),
@@ -44,7 +37,6 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
       retryPkt(nullptr),
       retryPort(nullptr),
       pendingWriteResponses(0),
-      b_handshake_pending(false),
       stats(this)
 {
     // Load RTL Shared Library using dlopen
@@ -66,6 +58,8 @@ CVA6RtlCPU::CVA6RtlCPU(const CVA6RtlCPUParams &params)
 
     // Instantiate Verilated CVA6 model from shared library
     core = create_core();
+
+    memIface = std::make_unique<CVA6MemIfaceAxi>(this, core);
 
     if (params.trace_enable) {
         core->setup_trace(params.trace_file);
@@ -177,30 +171,12 @@ CVA6RtlCPU::CpuPort::recvReqRetry()
 void
 CVA6RtlCPU::handleTimingResp(PacketPtr pkt, CpuPort *port)
 {
-    if (pkt->isRead()) {
-        read_data_buffer.clear();
-        read_data_buffer.resize(pkt->getSize());
-        std::memcpy(read_data_buffer.data(), pkt->getPtr<uint8_t>(),
-                    pkt->getSize());
-        r_data_ready = true;
-    } else if (pkt->isWrite()) {
+    if (pkt->isWrite()) {
         if (pendingWriteResponses > 0) {
             pendingWriteResponses--;
         }
-        // gem5 write responses arrive in issue order on a single port, so they
-        // retire the beats of the oldest outstanding AXI write first. Once all
-        // beats of that write are acknowledged, queue exactly one B response.
-        if (!writeXacts.empty()) {
-            if (writeXacts.front().second > 0) {
-                writeXacts.front().second--;
-            }
-            if (writeXacts.front().second == 0) {
-                bRespQueue.push_back(writeXacts.front().first);
-                writeXacts.pop_front();
-            }
-        }
     }
-    delete pkt;
+    memIface->acceptResp(pkt);
 }
 
 void
@@ -280,10 +256,6 @@ CVA6RtlCPU::tick()
     // 2. Falling Edge & Setup Inputs
     core->set_clk_i(0);
     if (resetDone) {
-        if (b_handshake_pending) {
-            bRespQueue.pop_front();
-            b_handshake_pending = false;
-        }
         // Query pending interrupts from the CPU's interrupt controller
         auto riscv_interrupts = static_cast<RiscvISA::Interrupts*>(interrupts[0]);
         uint64_t ip = riscv_interrupts->readIP();
@@ -293,255 +265,17 @@ CVA6RtlCPU::tick()
         core->set_ipi_i((ip & (1ULL << 3)) != 0);      // Machine software (MSIP)
         core->set_irq_i((ip & (1ULL << 9)) != 0 || (ip & (1ULL << 11)) != 0); // External (SEIP/MEIP)
 
-        // Drive R channel outputs
-        if (ar_busy && r_data_ready) {
-            core->set_noc_resp_r_valid_i(1);
-            core->set_noc_resp_r_id_i(read_id);
-            uint32_t bytes_per_beat = 1 << read_size;
-            uint64_t data_val = 0;
-            std::memcpy(&data_val,
-                        read_data_buffer.data() + read_beat * bytes_per_beat,
-                        bytes_per_beat);
-            uint64_t addr_beat = read_addr + read_beat * bytes_per_beat;
-            uint32_t shift_bytes = addr_beat % 8;
-            core->set_noc_resp_r_data_i(data_val << (shift_bytes * 8));
-            core->set_noc_resp_r_last_i(read_beat == read_len);
-            core->set_noc_resp_r_resp_i(0); // OKAY
-        } else {
-            core->set_noc_resp_r_valid_i(0);
-            core->set_noc_resp_r_last_i(0);
-            core->set_noc_resp_r_data_i(0);
-            core->set_noc_resp_r_id_i(0);
-            core->set_noc_resp_r_resp_i(0);
-        }
-
-        // Drive B channel outputs (one response per outstanding AXI write)
-        if (!bRespQueue.empty()) {
-            core->set_noc_resp_b_valid_i(1);
-            core->set_noc_resp_b_id_i(bRespQueue.front());
-            core->set_noc_resp_b_resp_i(0); // OKAY
-        } else {
-            core->set_noc_resp_b_valid_i(0);
-            core->set_noc_resp_b_id_i(0);
-            core->set_noc_resp_b_resp_i(0);
-        }
-
-        // Drive ready inputs
-        bool can_accept = !retryPkt;
-        core->set_noc_resp_ar_ready_i(!ar_busy && can_accept);
-        core->set_noc_resp_aw_ready_i(!aw_received && can_accept);
-        core->set_noc_resp_w_ready_i(
-            (aw_received || core->get_noc_req_aw_valid_o()) && can_accept);
+        // Drive memory interface inputs
+        memIface->driveInputs();
     } else {
-        // Inputs during reset
-        core->set_noc_resp_r_valid_i(0);
-        core->set_noc_resp_r_last_i(0);
-        core->set_noc_resp_r_data_i(0);
-        core->set_noc_resp_r_id_i(0);
-        core->set_noc_resp_r_resp_i(0);
-        core->set_noc_resp_b_valid_i(0);
-        core->set_noc_resp_b_id_i(0);
-        core->set_noc_resp_b_resp_i(0);
-        core->set_noc_resp_ar_ready_i(0);
-        core->set_noc_resp_aw_ready_i(0);
-        core->set_noc_resp_w_ready_i(0);
+        memIface->driveInputs();
     }
     core->eval(); // Propagate falling edge and inputs combinationally
     core->dump_trace(cycleCount * 10);
 
     // 3. Check handshakes that will complete ON the upcoming rising edge.
-    // We check this after eval() when the clock is low, so that combinational
-    // paths (such as core->noc_req_ar_valid_o and our driven inputs) have settled.
     if (resetDone) {
-        // A. Read address (AR channel) handshake
-        if (!ar_busy && !retryPkt && core->get_noc_req_ar_valid_o()) {
-            uint64_t addr = core->get_noc_req_ar_addr_o();
-            uint32_t bytes_per_beat = 1 << core->get_noc_req_ar_size_o();
-            uint32_t total_bytes =
-                bytes_per_beat * (core->get_noc_req_ar_len_o() + 1);
-
-            Request::Flags flags = 0;
-            if (addr < 0x80000000) {
-                flags.set(Request::UNCACHEABLE);
-            }
-            RequestPtr req = std::make_shared<Request>(addr, total_bytes,
-                                                       flags, requestorId);
-            PacketPtr pkt = Packet::createRead(req);
-            pkt->allocate();
-
-            // Route to instPort if prot indicates instruction fetch, else dataPort
-            CpuPort &port =
-                (core->get_noc_req_ar_prot_o() & 0x4) ? instPort : dataPort;
-
-            read_id = core->get_noc_req_ar_id_o();
-            read_addr = addr;
-            read_len = core->get_noc_req_ar_len_o();
-            read_size = core->get_noc_req_ar_size_o();
-            read_beat = 0;
-            ar_busy = true;
-            r_data_ready = false;
-
-            stats.numReadReqs++;
-            if (core->get_noc_req_ar_prot_o() & 0x4) {
-                stats.numReadReqsInst++;
-            } else {
-                stats.numReadReqsData++;
-            }
-            uint32_t ar_size = core->get_noc_req_ar_size_o();
-            if (ar_size < 8) {
-                stats.readReqSizes[ar_size]++;
-            }
-
-            if (!port.sendTimingReq(pkt)) {
-                retryPkt = pkt;
-                retryPort = &port;
-                if (&port == &instPort) {
-                    stats.numInstPortRetries++;
-                } else {
-                    stats.numDataPortRetries++;
-                }
-            }
-
-#if DEBUG_CVA
-            std::cout << "[AR Handshake] Cycle=" << std::dec << cycleCount
-                      << " Addr=0x" << std::hex << addr << " id=0x" << read_id
-                      << " size=" << std::dec << (1 << read_size)
-                      << " len=" << read_len << std::endl;
-#endif
-        }
-
-        // B. Read response (R channel) handshake
-        if (ar_busy && r_data_ready && core->get_noc_req_r_ready_o()) {
-            stats.numReadBeats++;
-            uint32_t bytes_per_beat = 1 << read_size;
-            uint64_t beat_val = 0;
-            std::memcpy(&beat_val, read_data_buffer.data() + read_beat * bytes_per_beat, std::min(bytes_per_beat, 8u));
-#if DEBUG_CVA
-            std::cout << "[R Handshake] Cycle=" << std::dec << cycleCount
-                      << " Beat=" << read_beat << "/" << read_len << " id=0x"
-                      << std::hex << (int)read_id << " Data=0x" << beat_val
-                      << " last=" << std::dec << (int)(read_beat == read_len)
-                      << std::endl;
-#endif
-
-            if (read_beat == read_len) {
-                ar_busy = false;
-                r_data_ready = false;
-            } else {
-                read_beat++;
-            }
-        }
-
-        // C. (Read latency is handled by timing response callback)
-
-        // F. Write response (B channel) handshake
-        if (!bRespQueue.empty() && core->get_noc_req_b_ready_o()) {
-            stats.numWriteResps++;
-#if DEBUG_CVA
-            std::cout << "[B Handshake] Cycle=" << std::dec << cycleCount
-                      << " id=0x" << std::hex
-                      << (unsigned)bRespQueue.front()
-                      << std::dec << std::endl;
-#endif
-            b_handshake_pending = true;
-        }
-
-        // D. Write address (AW channel) handshake
-        bool aw_handshake =
-            !aw_received && !retryPkt && core->get_noc_req_aw_valid_o();
-        if (aw_handshake) {
-            stats.numWriteReqs++;
-            uint32_t aw_size = core->get_noc_req_aw_size_o();
-            if (aw_size < 8) {
-                stats.writeReqSizes[aw_size]++;
-            }
-            aw_received = true;
-            write_addr = core->get_noc_req_aw_addr_o();
-            write_id = core->get_noc_req_aw_id_o();
-            write_size = core->get_noc_req_aw_size_o();
-            write_len = core->get_noc_req_aw_len_o();
-            w_received_beats = 0;
-
-            // Track this write so it gets exactly one B response once all of
-            // its (write_len + 1) beats are acknowledged by gem5.
-            writeXacts.push_back(
-                std::make_pair((uint8_t)write_id, write_len + 1));
-
-#if DEBUG_CVA
-            std::cout << "[AW Handshake] Cycle=" << std::dec << cycleCount
-                      << " Addr=0x" << std::hex << write_addr
-                      << " id=0x" << write_id
-                      << " size=" << std::dec << (1 << write_size)
-                      << " len=" << write_len << std::endl;
-#endif
-        }
-
-        // E. Write data (W channel) handshake
-        if (!retryPkt && (aw_received || core->get_noc_req_aw_valid_o()) &&
-            core->get_noc_req_w_valid_o()) {
-
-            stats.numWriteBeats++;
-            uint32_t current_size =
-                aw_received ? write_size : core->get_noc_req_aw_size_o();
-            uint32_t bytes_per_beat = 1 << current_size;
-            uint64_t addr =
-                (aw_received ? write_addr : core->get_noc_req_aw_addr_o()) +
-                w_received_beats * bytes_per_beat;
-            uint64_t data_val = core->get_noc_req_w_data_o();
-
-            // Check exit command
-            if (addr == 0x80001000 && data_val != 0) {
-                exitSimLoop(csprintf("CVA6 program completed successfully at PC: 0x%016llx",
-                                     (unsigned long long)core->get_pc_o()));
-                return;
-            }
-
-            // Perform timing write
-            Request::Flags flags = 0;
-            if (addr < 0x80000000) {
-                flags.set(Request::UNCACHEABLE);
-            }
-            RequestPtr req = std::make_shared<Request>(addr, bytes_per_beat,
-                                                       flags, requestorId);
-            PacketPtr pkt = Packet::createWrite(req);
-            pkt->allocate();
-            uint32_t shift_bytes = addr % 8;
-            uint64_t data_to_write = data_val >> (shift_bytes * 8);
-            std::memcpy(pkt->getPtr<uint8_t>(), &data_to_write,
-                        bytes_per_beat);
-
-            pendingWriteResponses++;
-
-            if (!dataPort.sendTimingReq(pkt)) {
-                retryPkt = pkt;
-                retryPort = &dataPort;
-                stats.numDataPortRetries++;
-            }
-
-            uint32_t current_len =
-                aw_received ? write_len : core->get_noc_req_aw_len_o();
-
-#if DEBUG_CVA
-            std::cout << "[W Handshake] Cycle=" << std::dec << cycleCount
-                      << " Data=0x" << std::hex << data_val
-                      << " Beat=" << w_received_beats << "/" << current_len
-                      << " last=" << std::dec
-                      << (w_received_beats == current_len ||
-                          core->get_noc_req_w_last_o())
-                      << std::endl;
-#endif
-
-            w_received_beats++;
-
-            // Did we just finish the write burst? Release the W datapath so
-            // the next AW can be accepted; the B response for this write is
-            // emitted independently once gem5 acknowledges all of its beats.
-            if (w_received_beats == current_len + 1 ||
-                core->get_noc_req_w_last_o()) {
-                aw_received = false;
-                w_received_beats = 0;
-            }
-        }
+        memIface->sampleOutputs();
     }
 
     // 4. Rising Edge
@@ -564,6 +298,82 @@ CVA6RtlCPU::tick()
 
     // 5. Schedule next cycle
     schedule(tickEvent, clockEdge(Cycles(1)));
+}
+
+bool
+CVA6RtlCPU::sendTimingReq(PacketPtr pkt, bool is_inst)
+{
+    CpuPort &port = is_inst ? instPort : dataPort;
+    if (pkt->isWrite()) {
+        pendingWriteResponses++;
+    }
+    if (!port.sendTimingReq(pkt)) {
+        retryPkt = pkt;
+        retryPort = &port;
+        if (&port == &instPort) {
+            stats.numInstPortRetries++;
+        } else {
+            stats.numDataPortRetries++;
+        }
+        return false;
+    }
+    return true;
+}
+
+void
+CVA6RtlCPU::recordReadReq(bool is_inst, uint32_t size)
+{
+    stats.numReadReqs++;
+    if (is_inst) {
+        stats.numReadReqsInst++;
+    } else {
+        stats.numReadReqsData++;
+    }
+    if (size < 8) {
+        stats.readReqSizes[size]++;
+    }
+}
+
+void
+CVA6RtlCPU::recordWriteReq(uint32_t size)
+{
+    stats.numWriteReqs++;
+    if (size < 8) {
+        stats.writeReqSizes[size]++;
+    }
+}
+
+void
+CVA6RtlCPU::recordReadBeat()
+{
+    stats.numReadBeats++;
+}
+
+void
+CVA6RtlCPU::recordWriteBeat()
+{
+    stats.numWriteBeats++;
+}
+
+void
+CVA6RtlCPU::recordWriteResp()
+{
+    stats.numWriteResps++;
+}
+
+void
+CVA6RtlCPU::exitSimulation(const std::string &reason)
+{
+    exitSimLoop(reason);
+}
+
+void
+CVA6RtlCPU::writePhysMem(Addr addr, const uint8_t *data, size_t size)
+{
+    // Functional (synchronous) write that bypasses the timing path and commits
+    // data directly to the physical memory backing store. After this call,
+    // physProxy.read(addr) will immediately return the written value.
+    system->physProxy.writeBlob(addr, data, size);
 }
 
 } // namespace gem5

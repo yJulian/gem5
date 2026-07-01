@@ -6,17 +6,19 @@
 #include <utility>
 #include <vector>
 
+#include <memory>
 #include "base/statistics.hh"
 #include "cpu/cva6/cva6_rtl_core_interface.hh"
 #include "mem/port.hh"
 #include "cpu/base.hh"
 #include "cpu/simple_thread.hh"
 #include "params/CVA6RtlCPU.hh"
+#include "cpu/rtl/mem_iface_base.hh"
 
 namespace gem5
 {
 
-class CVA6RtlCPU : public BaseCPU
+class CVA6RtlCPU : public BaseCPU, public RtlCpuHelper
 {
   private:
     class CpuPort : public RequestPort
@@ -42,32 +44,7 @@ class CVA6RtlCPU : public BaseCPU
     uint64_t cycleCount;
     bool resetDone;
 
-    // AXI state buffers for co-simulation
-    bool ar_busy;
-    bool r_data_ready;
-    uint64_t read_addr;
-    uint32_t read_id;
-    uint32_t read_len;
-    uint32_t read_size;
-    uint32_t read_beat;
-    std::vector<uint8_t> read_data_buffer;
-
-    bool aw_received;
-    uint64_t write_addr;
-    uint32_t write_id;
-    uint32_t write_size;
-    uint32_t write_len;
-    uint32_t w_received_beats;
-
-    // Outstanding AXI write transactions, in issue order. Each entry holds the
-    // AXI write id and the number of per-beat gem5 write responses still
-    // expected for that transaction. CVA6 requires exactly one B response per
-    // AW, so we must track every outstanding write individually rather than
-    // collapsing them into a single pending flag.
-    std::deque<std::pair<uint8_t, uint32_t>> writeXacts;
-    // Ids of fully-acknowledged writes waiting for a B handshake to the core.
-    std::deque<uint8_t> bRespQueue;
-    bool b_handshake_pending;
+    std::unique_ptr<RtlMemIfaceBase> memIface;
 
     void tick();
     EventFunctionWrapper tickEvent;
@@ -80,6 +57,7 @@ class CVA6RtlCPU : public BaseCPU
     PacketPtr retryPkt;
     CpuPort *retryPort;
     uint32_t pendingWriteResponses;
+
 
     struct CPUStats : public statistics::Group
     {
@@ -128,6 +106,20 @@ class CVA6RtlCPU : public BaseCPU
     void wakeup(ThreadID tid) override {}
     Counter totalInsts() const override { return cycleCount; }
     Counter totalOps() const override { return cycleCount; }
+
+    // RtlCpuHelper virtual overrides
+    bool sendTimingReq(PacketPtr pkt, bool is_inst) override;
+    RequestorID getRequestorId() const override { return requestorId; }
+    void recordReadReq(bool is_inst, uint32_t size) override;
+    void recordWriteReq(uint32_t size) override;
+    void recordReadBeat() override;
+    void recordWriteBeat() override;
+    void recordWriteResp() override;
+    void exitSimulation(const std::string &reason) override;
+    bool isResetDone() const override { return resetDone; }
+    uint64_t getCycleCount() const override { return cycleCount; }
+    bool isRetryPending() const override { return retryPkt != nullptr; }
+    void writePhysMem(Addr addr, const uint8_t *data, size_t size) override;
 };
 
 } // namespace gem5
