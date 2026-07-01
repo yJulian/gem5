@@ -247,10 +247,10 @@ RtlCPU::tick()
         if (init_a1 == 0) {
             init_a1 = 0x87E00000;
         }
-#if DEBUG_RTL
-        std::cout << "[RTL CPU DEBUG] Cycle=" << std::dec << cycleCount
-                  << " init_a1=0x" << std::hex << init_a1 << std::endl;
-#endif
+//#if DEBUG_RTL
+//        std::cout << "[RTL CPU DEBUG] Cycle=" << std::dec << cycleCount
+//                  << " init_a1=0x" << std::hex << init_a1 << std::endl;
+//#endif
         core->set_boot_reg(init_a1);
     }
 
